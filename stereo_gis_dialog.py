@@ -199,41 +199,33 @@ class StereoGisDialog(QDialog):
         left.addWidget(g_km)
         gridk = QGridLayout(g_km)
 
-        self.chk_kmedoids = QCheckBox("Enable k-medoids")
-        self.chk_kmedoids.setChecked(False)
-        gridk.addWidget(self.chk_kmedoids, 0, 0, 1, 2)
-
-        gridk.addWidget(QLabel("k classes:"), 1, 0)
+        gridk.addWidget(QLabel("Number of clusters:"), 0, 0)
         self.k_spin = QSpinBox()
         self.k_spin.setRange(1, 999999)
-        self.k_spin.setValue(2)
-        gridk.addWidget(self.k_spin, 1, 1)
+        self.k_spin.setValue(1)
+        gridk.addWidget(self.k_spin, 0, 1)
 
-        self.init_random = QRadioButton("Random seeds")
+        self.init_random = QRadioButton("Automatic seeds")
         self.init_pick = QRadioButton("Pick seeds on plot")
         self.init_random.setChecked(True)
-        gridk.addWidget(self.init_random, 2, 0, 1, 2)
-        gridk.addWidget(self.init_pick, 3, 0, 1, 2)
+        gridk.addWidget(self.init_random, 1, 0, 1, 2)
+        gridk.addWidget(self.init_pick, 2, 0, 1, 2)
 
-        gridk.addWidget(QLabel("Random seed:"), 4, 0)
+        gridk.addWidget(QLabel("Random seed:"), 3, 0)
         self.seed_spin = QSpinBox()
-        self.seed_spin.setRange(0, 10**9)
+        self.seed_spin.setRange(0, 10 ** 9)
         self.seed_spin.setValue(0)
-        gridk.addWidget(self.seed_spin, 4, 1)
+        gridk.addWidget(self.seed_spin, 3, 1)
 
         self.btn_pick = QPushButton("Pick seeds")
         self.btn_clear_picks = QPushButton("Clear picks")
         self.lbl_picks = QLabel("Picked: 0")
-        gridk.addWidget(self.btn_pick, 5, 0)
-        gridk.addWidget(self.btn_clear_picks, 5, 1)
-        gridk.addWidget(self.lbl_picks, 6, 0, 1, 2)
+        gridk.addWidget(self.btn_pick, 4, 0)
+        gridk.addWidget(self.btn_clear_picks, 4, 1)
+        gridk.addWidget(self.lbl_picks, 5, 0, 1, 2)
 
         self.btn_pick.clicked.connect(self._toggle_picking)
         self.btn_clear_picks.clicked.connect(self._clear_picks)
-
-        self.chk_plot_clusters = QCheckBox("Plot clustered results")
-        self.chk_plot_clusters.setChecked(True)
-        gridk.addWidget(self.chk_plot_clusters, 7, 0, 1, 2)
 
         # Saving
         g_save = QGroupBox("Save to files (off by default)")
@@ -565,134 +557,134 @@ class StereoGisDialog(QDialog):
                     f"Bingham beta axis plotted at trend={tr:.2f}, plunge={pl:.2f}."
                 )
 
-            # k-medoids
+            # k-medoids (always performed)
             cluster_summary = []
-            if self.chk_kmedoids.isChecked():
-                k = int(self.k_spin.value())
-                self.append_log(f"Running k-medoids with k={k}.")
-                if k > n:
+            k = int(self.k_spin.value())
+            self.append_log(f"Running k-medoids with k={k}.")
+
+            if k > n:
+                QMessageBox.warning(
+                    self,
+                    "qAttitude",
+                    f"k={k} cannot exceed number of observations n={n}.",
+                )
+                self.append_log(f"Invalid k: {k} > {n}.")
+                return
+
+            if self.init_pick.isChecked():
+                if len(self._picked_medoid_indices) != k:
                     QMessageBox.warning(
                         self,
                         "qAttitude",
-                        f"k={k} cannot exceed number of observations n={n}.",
+                        f"Pick exactly k={k} medoids on plot (picked {len(self._picked_medoid_indices)}).",
                     )
-                    self.append_log(f"Invalid k: {k} > {n}.")
+                    self.append_log(
+                        f"Invalid picked medoids count: expected {k}, got {len(self._picked_medoid_indices)}."
+                    )
                     return
-
-                if self.init_pick.isChecked():
-                    if len(self._picked_medoid_indices) != k:
-                        QMessageBox.warning(
-                            self,
-                            "qAttitude",
-                            f"Pick exactly k={k} medoids on plot (picked {len(self._picked_medoid_indices)}).",
-                        )
-                        self.append_log(
-                            f"Invalid picked medoids count: expected {k}, got {len(self._picked_medoid_indices)}."
-                        )
-                        return
-                    init_medoids = np.array(self._picked_medoid_indices, dtype=int)
-                    self.append_log(
-                        f"Using manually picked medoids: {init_medoids.tolist()}"
-                    )
-                else:
-                    rng = np.random.default_rng(int(self.seed_spin.value()))
-                    init_medoids = rng.choice(n, size=k, replace=False)
-                    self.append_log(
-                        f"Using random initial medoids: {init_medoids.tolist()}"
-                    )
-
-                labels, medoids = kmedoids_pam_axial(
-                    vectors_xyz,
-                    k=k,
-                    maxiter=100,
-                    init_medoids=init_medoids,
-                    log=self.append_log,
+                init_medoids = np.array(self._picked_medoid_indices, dtype=int)
+                self.append_log(
+                    f"Using manually picked medoids: {init_medoids.tolist()}"
+                )
+            else:
+                rng = np.random.default_rng(int(self.seed_spin.value()))
+                init_medoids = rng.choice(n, size=k, replace=False)
+                self.append_log(
+                    f"Using automatic initial medoids: {init_medoids.tolist()}"
                 )
 
-                if self.chk_plot_clusters.isChecked():
-                    cmap = plt.get_cmap("tab10")
-                    for ci in range(k):
-                        idx = np.where(labels == ci)[0]
-                        color = cmap(ci % 10)
+            labels, medoids = kmedoids_pam_axial(
+                vectors_xyz,
+                k=k,
+                maxiter=100,
+                init_medoids=init_medoids,
+                log=self.append_log,
+            )
 
-                        if plot_poles:
-                            if is_planes:
-                                self.ax.pole(
-                                    trends[idx],
-                                    plunges[idx],
-                                    ".",
-                                    color=color,
-                                    markersize=6,
-                                    alpha=0.9,
-                                )
-                            else:
-                                self.ax.line(
-                                    plunges[idx],
-                                    trends[idx],
-                                    ".",
-                                    color=color,
-                                    markersize=6,
-                                    alpha=0.9,
-                                )
+            cmap = plt.get_cmap("tab10")
+            for ci in range(k):
+                idx = np.where(labels == ci)[0]
+                color = cmap(ci % 10)
 
-                        if (
-                            is_planes
-                            and plot_gcs
-                            and data.get("strikes_deg") is not None
-                            and data.get("dips_deg") is not None
-                        ):
-                            self.ax.plane(
-                                data["strikes_deg"][idx],
-                                data["dips_deg"][idx],
-                                color=color,
-                                linewidth=1.0,
-                                alpha=0.45,
-                            )
-
-                    for ci, mi in enumerate(medoids):
-                        color = cmap(ci % 10)
-                        if is_planes:
-                            self.ax.pole(
-                                [trends[mi]],
-                                [plunges[mi]],
-                                marker="*",
-                                color=color,
-                                markersize=14,
-                                markeredgecolor="k",
-                            )
-                        else:
-                            self.ax.line(
-                                [plunges[mi]],
-                                [trends[mi]],
-                                marker="*",
-                                color=color,
-                                markersize=14,
-                                markeredgecolor="k",
-                            )
-
-                for ci in range(k):
-                    idx = np.where(labels == ci)[0]
-                    if idx.size == 0:
-                        continue
-                    vmf_c = vmf_mean_axial(vectors_xyz[idx], log=self.append_log)
-                    mean_xyz = vmf_c["mean_xyz"]
-                    m_tr, m_pl = (
-                        xyz_to_trend_plunge(mean_xyz)
-                        if np.isfinite(mean_xyz).all()
-                        else (float("nan"), float("nan"))
-                    )
-                    cluster_summary.append(
-                        (
-                            ci,
-                            int(idx.size),
-                            int(medoids[ci]),
-                            f"{m_tr:.2f}",
-                            f"{m_pl:.2f}",
-                            f"{vmf_c['Rbar']:.3f}",
-                            f"{vmf_c['kappa']:.3g}",
+                if plot_poles:
+                    if is_planes:
+                        self.ax.pole(
+                            trends[idx],
+                            plunges[idx],
+                            ".",
+                            color=color,
+                            markersize=6,
+                            alpha=0.9,
                         )
+                    else:
+                        self.ax.line(
+                            plunges[idx],
+                            trends[idx],
+                            ".",
+                            color=color,
+                            markersize=6,
+                            alpha=0.9,
+                        )
+
+                if (
+                    is_planes
+                    and plot_gcs
+                    and data.get("strikes_deg") is not None
+                    and data.get("dips_deg") is not None
+                ):
+                    self.ax.plane(
+                        data["strikes_deg"][idx],
+                        data["dips_deg"][idx],
+                        color=color,
+                        linewidth=1.0,
+                        alpha=0.45,
                     )
-                self.append_log("k-medoids clustering completed.")
+
+            for ci, mi in enumerate(medoids):
+                color = cmap(ci % 10)
+                if is_planes:
+                    self.ax.pole(
+                        [trends[mi]],
+                        [plunges[mi]],
+                        marker="*",
+                        color=color,
+                        markersize=14,
+                        markeredgecolor="k",
+                    )
+                else:
+                    self.ax.line(
+                        [plunges[mi]],
+                        [trends[mi]],
+                        marker="*",
+                        color=color,
+                        markersize=14,
+                        markeredgecolor="k",
+                    )
+
+            for ci in range(k):
+                idx = np.where(labels == ci)[0]
+                if idx.size == 0:
+                    continue
+                vmf_c = vmf_mean_axial(vectors_xyz[idx], log=self.append_log)
+                mean_xyz = vmf_c["mean_xyz"]
+                m_tr, m_pl = (
+                    xyz_to_trend_plunge(mean_xyz)
+                    if np.isfinite(mean_xyz).all()
+                    else (float("nan"), float("nan"))
+                )
+                cluster_summary.append(
+                    (
+                        ci,
+                        int(idx.size),
+                        int(medoids[ci]),
+                        f"{m_tr:.2f}",
+                        f"{m_pl:.2f}",
+                        f"{vmf_c['Rbar']:.3f}",
+                        f"{vmf_c['kappa']:.3g}",
+                    )
+                )
+
+            self.append_log("k-medoids clustering completed.")
 
             # self.ax.set_title(f"{'Planes' if is_planes else 'Lines'} (n={n})")
             self.canvas.draw()
@@ -719,17 +711,17 @@ class StereoGisDialog(QDialog):
                             f"R̄={rbar}, κ≈{kappa}"
                         )
                         for (
-                            cluster_id,
-                            count,
-                            medoid_index,
-                            mean_trend,
-                            mean_plunge,
-                            rbar,
-                            kappa,
-                        ) in cluster_summary
+                        cluster_id,
+                        count,
+                        medoid_index,
+                        mean_trend,
+                        mean_plunge,
+                        rbar,
+                        kappa,
+                    ) in cluster_summary
                     ],
                 )
-            elif self.chk_kmedoids.isChecked():
+            else:
                 self.append_log("Clustering summary: no non-empty clusters to report.")
 
             self.append_log("Hypothesis tests summary: not implemented yet.")

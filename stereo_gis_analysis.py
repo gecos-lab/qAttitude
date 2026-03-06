@@ -71,12 +71,6 @@ def vmf_mean_axial(vectors_xyz: np.ndarray, log=None) -> dict:
     _log(log, f"VMF: input vectors shape = {vectors_xyz.shape}")
 
     vectors_both = np.vstack([vectors_xyz, mirror_to_other_hemisphere(vectors_xyz)])
-    print(
-        "vectors_xyz: ",
-        np.shape(vectors_xyz),
-        " - vectors_both: ",
-        np.shape(vectors_both),
-    )
 
     V = np.array([mirror_to_other_hemisphere(v) for v in vectors_xyz], dtype=float)
     S = V.sum(axis=0)
