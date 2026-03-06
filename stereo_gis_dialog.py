@@ -26,12 +26,9 @@ from qgis.PyQt.QtWidgets import (
     QFileDialog,
     QGroupBox,
     QRadioButton,
-    QTableView,
-    QAbstractItemView,
     QMessageBox,
-    QApplication,
+    QPlainTextEdit,
 )
-from qgis.PyQt.QtGui import QStandardItemModel, QStandardItem
 
 from qgis.core import QgsProject, QgsVectorLayer, QgsMimeDataUtils, QgsMapLayer
 
@@ -45,6 +42,7 @@ from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 
 import mplstereonet
+from mplstereonet import stereonet_math
 
 from .stereo_gis_analysis import (
     read_orientations_from_layer_selection,
@@ -91,41 +89,13 @@ class LayerDropGroupBox(QGroupBox):
                 continue
 
             layer = QgsProject.instance().mapLayer(layer_id)
-            if layer is not None:
+            if layer is not None and layer.type() == QgsMapLayer.VectorLayer:
                 self.layerDropped.emit(layer)
                 event.setDropAction(Qt.CopyAction)
                 event.accept()
                 return
 
         event.ignore()
-
-
-class CopyableTableView(QTableView):
-    def keyPressEvent(self, event):
-        if event.matches(event.StandardKey.Copy):
-            self.copySelectionToClipboard()
-            return
-        super().keyPressEvent(event)
-
-    def copySelectionToClipboard(self):
-        selection = self.selectionModel().selectedIndexes()
-        if not selection:
-            return
-        selection = sorted(selection, key=lambda x: (x.row(), x.column()))
-        rows = {}
-        for idx in selection:
-            rows.setdefault(idx.row(), {})[idx.column()] = (
-                idx.data() if idx.data() is not None else ""
-            )
-        lines = []
-        for r in sorted(rows.keys()):
-            cols = rows[r]
-            maxc = max(cols.keys())
-            line = "\t".join(str(cols.get(c, "")) for c in range(maxc + 1))
-            lines.append(line)
-        tsv = "\n".join(lines)
-
-        QApplication.clipboard().setText(tsv)
 
 
 class StereoGisDialog(QDialog):
@@ -148,6 +118,10 @@ class StereoGisDialog(QDialog):
 
         # Initialize the plot area immediately (empty stereonet)
         self._plot_empty("Drop/select a vector layer to begin")
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._populate_layers()
 
     def _init_ui(self):
         main = QHBoxLayout(self)
@@ -287,47 +261,58 @@ class StereoGisDialog(QDialog):
         # Plot
         self.fig = Figure(figsize=(6, 6), dpi=120)
         self.canvas = FigureCanvas(self.fig)
-        right.addWidget(self.canvas, 2)
+        self.canvas.setMinimumHeight(500)
+        right.addWidget(self.canvas, 5)
 
         self.ax = self.fig.add_subplot(111, projection="stereonet")
         self.ax.grid(True)
         self.canvas.mpl_connect("button_press_event", self._on_plot_click)
 
-        # Tables
-        right.addWidget(QLabel("Clustering summary (Ctrl+C copy)"))
-        self.cluster_table = CopyableTableView()
-        self.cluster_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self.cluster_table.setSelectionBehavior(QAbstractItemView.SelectItems)
-        right.addWidget(self.cluster_table, 1)
+        g_log = QGroupBox("Log")
+        right.addWidget(g_log, 2)
+        gridlog = QGridLayout(g_log)
 
-        right.addWidget(QLabel("Hypothesis tests summary (Ctrl+C copy)"))
-        self.tests_table = CopyableTableView()
-        self.tests_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self.tests_table.setSelectionBehavior(QAbstractItemView.SelectItems)
-        right.addWidget(self.tests_table, 1)
+        self.log_output = QPlainTextEdit(self)
+        self.log_output.setReadOnly(True)
+        self.log_output.setPlaceholderText("Analysis log messages will appear here.")
+        self.log_output.setMinimumHeight(180)
+        gridlog.addWidget(self.log_output, 0, 0, 1, 2)
+
+        self.btn_clear_log = QPushButton("Clear log")
+        self.btn_clear_log.clicked.connect(self.clear_log)
+        gridlog.addWidget(self.btn_clear_log, 1, 1)
 
         self._refresh_field_controls()
         self._populate_layers()
 
     def _populate_layers(self):
+        current_layer = self._current_layer()
+
+        self.layer_combo.blockSignals(True)
         self.layer_combo.clear()
         self._layer_ids_by_index = []
+
         for layer in QgsProject.instance().mapLayers().values():
-            # Optional: filter only vector layers, etc.
             if layer.type() != QgsMapLayer.VectorLayer:
                 continue
-
             self.layer_combo.addItem(layer.name())
             self._layer_ids_by_index.append(layer.id())
 
-        # If we already have an analysis_layer, keep UI in sync
-        if self.analysis_layer is not None:
+        self.layer_combo.blockSignals(False)
+
+        if current_layer is not None:
+            self._select_layer_in_combo(current_layer)
+        elif self.analysis_layer is not None:
             self._select_layer_in_combo(self.analysis_layer)
+
+        self._refresh_fields()
 
     def _select_layer_in_combo(self, layer: QgsMapLayer) -> None:
         """
-        Selects the given layer in the combo if present.
+        Select the given layer in the combo if present.
         """
+        if layer is None:
+            return
         try:
             idx = self._layer_ids_by_index.index(layer.id())
         except ValueError:
@@ -339,8 +324,17 @@ class StereoGisDialog(QDialog):
         Called when a layer is dropped onto the Input group box.
         Make drag&drop update the same selection used by _current_layer().
         """
+        if layer is None:
+            return
+        if layer.type() != QgsMapLayer.VectorLayer:
+            QMessageBox.warning(self, "qAttitude", "Please drop a vector layer.")
+            return
+
         self.analysis_layer = layer
+        self._populate_layers()
         self._select_layer_in_combo(layer)
+        self._refresh_fields()
+        self.append_log(f"Input layer set to: {layer.name()}")
 
     def _current_layer(self) -> QgsMapLayer | None:
         """
@@ -348,8 +342,7 @@ class StereoGisDialog(QDialog):
         Primary source: the UI selector (combo).
         Secondary source: self.analysis_layer (if combo not available).
         """
-        # --- preferred: resolve from combo selection ---
-        if hasattr(self, "cbo_layer") and self.layer_combo.currentIndex() >= 0:
+        if self.layer_combo.currentIndex() >= 0:
             idx = self.layer_combo.currentIndex()
             if 0 <= idx < len(self._layer_ids_by_index):
                 layer_id = self._layer_ids_by_index[idx]
@@ -357,7 +350,6 @@ class StereoGisDialog(QDialog):
                 if lyr is not None:
                     return lyr
 
-        # --- fallback ---
         return self.analysis_layer
 
     def _refresh_fields(self):
@@ -431,15 +423,10 @@ class StereoGisDialog(QDialog):
             self._picking_enabled = False
             self.btn_pick.setText("Pick medoid seeds")
 
-    def _set_table(self, table_view, headers, rows):
-        model = QStandardItemModel()
-        model.setColumnCount(len(headers))
-        model.setHorizontalHeaderLabels(headers)
-        for r in rows:
-            items = [QStandardItem(str(v)) for v in r]
-            model.appendRow(items)
-        table_view.setModel(model)
-        table_view.resizeColumnsToContents()
+    def _log_section(self, title: str, lines: list[str]) -> None:
+        self.append_log(title)
+        for line in lines:
+            self.append_log(f"  {line}")
 
     def _plot_empty(self, title: str = "No data to plot") -> None:
         """
@@ -450,11 +437,17 @@ class StereoGisDialog(QDialog):
             self.fig.clear()
             self.ax = self.fig.add_subplot(111, projection="stereonet")
             self.ax.grid(True)
-            self.ax.set_title(title)
+            # self.ax.set_title(title)
             self.canvas.draw()
         except Exception:
             # As a last resort, avoid crashing the plugin due to plotting issues
             pass
+
+    def append_log(self, message: str) -> None:
+        self.log_output.appendPlainText(str(message))
+
+    def clear_log(self) -> None:
+        self.log_output.clear()
 
     def _run_analysis(self):
         layer = self._current_layer()
@@ -467,12 +460,22 @@ class StereoGisDialog(QDialog):
         field2 = self.field2_combo.currentText()
 
         try:
+            self.append_log("=" * 60)
+            self.append_log("Starting analysis")
+            self.append_log(f"Layer: {layer.name()}")
+            self.append_log(
+                f"Mode: {'Planes (dip/dipdir)' if is_planes else 'Lines (plunge/trend)'}"
+            )
+            self.append_log(f"Fields: {field1}, {field2}")
+
             data = read_orientations_from_layer_selection(
-                layer, is_planes, field1, field2
+                layer, is_planes, field1, field2, log=self.append_log
             )
 
             vectors_xyz = data["vectors_xyz"]
             n = int(vectors_xyz.shape[0])
+            self.append_log(f"Valid orientations loaded: {n}")
+
             if n == 0:
                 QMessageBox.warning(
                     self,
@@ -497,13 +500,15 @@ class StereoGisDialog(QDialog):
             plot_poles = (not is_planes) or (plane_mode in (0, 2))
             plot_gcs = is_planes and (plane_mode in (1, 2))
 
+            self.append_log(
+                f"Plot options: individual={show_individual}, contours={show_contours}, "
+                f"plot_poles={plot_poles}, plot_great_circles={plot_gcs}"
+            )
+
             # base plot
             if show_individual and plot_poles:
-                # if is_planes:
-                #     self.ax.pole(trends, plunges, "k.", markersize=4, alpha=0.85)
-                # else:
-                #     self.ax.line(plunges, trends, "k.", markersize=4, alpha=0.85)
                 self.ax.line(plunges, trends, "k.", markersize=4, alpha=0.85)
+                self.append_log(f"{n} poles plotted.")
 
             if (
                 show_individual
@@ -518,19 +523,9 @@ class StereoGisDialog(QDialog):
                     linewidth=1,
                     alpha=1,
                 )
+                self.append_log(f"{n} great circles plotted.")
 
             if show_contours:
-                # try:
-                #     self.ax.density_contourf(
-                #         plunges,
-                #         trends,
-                #         measurement="lines",
-                #         cmap="Greys",
-                #         alpha=0.6,
-                #         levels=int(self.contour_levels.value()),
-                #     )
-                # except TypeError:
-                #     self.ax.density_contourf(plunges, trends, cmap="Greys", alpha=0.6)
                 self.ax.density_contourf(
                     plunges,
                     trends,
@@ -539,17 +534,25 @@ class StereoGisDialog(QDialog):
                     alpha=0.6,
                     levels=int(self.contour_levels.value()),
                 )
+                self.append_log(
+                    f"Contours plotted with {int(self.contour_levels.value())} levels."
+                )
 
             # overlays
             if self.chk_vmf.isChecked():
-                vmf = vmf_mean_axial(vectors_xyz) #_______________________________________________
+                self.append_log("Computing Von Mises-Fisher mean...")
+                vmf = vmf_mean_axial(vectors_xyz, log=self.append_log)
                 m = vmf["mean_xyz"]
                 if np.isfinite(m).all():
                     tr, pl = xyz_to_trend_plunge(m)
                     self.ax.line(pl, tr, "r*", markersize=12)
+                    self.append_log(
+                        f"VMF mean plotted at trend={tr:.2f}, plunge={pl:.2f} in red."
+                    )
 
             if self.chk_bingham.isChecked():
-                b = bingham_principal_axes_axial(vectors_xyz) #_______________________________________________
+                self.append_log("Computing Bingham principal axes...")
+                b = bingham_principal_axes_axial(vectors_xyz, log=self.append_log)
                 beta = b["beta_axis_xyz"]
                 tr, pl = xyz_to_trend_plunge(beta)
                 self.ax.line(pl, tr, "D", color="#1f77b4", markersize=7)
@@ -558,17 +561,22 @@ class StereoGisDialog(QDialog):
                 dip = 90.0 - pl
                 strike = dipdir2strike(dipdir)
                 self.ax.plane(strike, dip, color="#1f77b4", linewidth=1.4, alpha=0.85)
+                self.append_log(
+                    f"Bingham beta axis plotted at trend={tr:.2f}, plunge={pl:.2f}."
+                )
 
             # k-medoids
             cluster_summary = []
             if self.chk_kmedoids.isChecked():
                 k = int(self.k_spin.value())
+                self.append_log(f"Running k-medoids with k={k}.")
                 if k > n:
                     QMessageBox.warning(
                         self,
                         "qAttitude",
                         f"k={k} cannot exceed number of observations n={n}.",
                     )
+                    self.append_log(f"Invalid k: {k} > {n}.")
                     return
 
                 if self.init_pick.isChecked():
@@ -578,14 +586,27 @@ class StereoGisDialog(QDialog):
                             "qAttitude",
                             f"Pick exactly k={k} medoids on plot (picked {len(self._picked_medoid_indices)}).",
                         )
+                        self.append_log(
+                            f"Invalid picked medoids count: expected {k}, got {len(self._picked_medoid_indices)}."
+                        )
                         return
                     init_medoids = np.array(self._picked_medoid_indices, dtype=int)
+                    self.append_log(
+                        f"Using manually picked medoids: {init_medoids.tolist()}"
+                    )
                 else:
                     rng = np.random.default_rng(int(self.seed_spin.value()))
                     init_medoids = rng.choice(n, size=k, replace=False)
+                    self.append_log(
+                        f"Using random initial medoids: {init_medoids.tolist()}"
+                    )
 
                 labels, medoids = kmedoids_pam_axial(
-                    vectors_xyz, k=k, maxiter=100, init_medoids=init_medoids
+                    vectors_xyz,
+                    k=k,
+                    maxiter=100,
+                    init_medoids=init_medoids,
+                    log=self.append_log,
                 )
 
                 if self.chk_plot_clusters.isChecked():
@@ -653,7 +674,7 @@ class StereoGisDialog(QDialog):
                     idx = np.where(labels == ci)[0]
                     if idx.size == 0:
                         continue
-                    vmf_c = vmf_mean_axial(vectors_xyz[idx])
+                    vmf_c = vmf_mean_axial(vectors_xyz[idx], log=self.append_log)
                     mean_xyz = vmf_c["mean_xyz"]
                     m_tr, m_pl = (
                         xyz_to_trend_plunge(mean_xyz)
@@ -671,40 +692,47 @@ class StereoGisDialog(QDialog):
                             f"{vmf_c['kappa']:.3g}",
                         )
                     )
+                self.append_log("k-medoids clustering completed.")
 
-            self.ax.set_title(f"{'Planes' if is_planes else 'Lines'} (n={n})")
+            # self.ax.set_title(f"{'Planes' if is_planes else 'Lines'} (n={n})")
             self.canvas.draw()
+            self.append_log("Plot updated.")
 
-            # cache projected XY for picking (optional)
+            # cache projected XY for picking
             try:
-                from mplstereonet import stereonet_math
-
                 x, y = stereonet_math.line(plunges, trends)
                 self._last_projected = np.column_stack([x, y]).astype(float)
+                self.append_log("Projected plot coordinates cached for medoid picking.")
             except Exception:
                 self._last_projected = None
+                self.append_log("Could not cache projected plot coordinates.")
 
             self._last_vectors_xyz = vectors_xyz
 
-            self._set_table(
-                self.cluster_table,
-                headers=[
-                    "Cluster",
-                    "n",
-                    "Medoid index",
-                    "VMF mean trend",
-                    "VMF mean plunge",
-                    "R̄",
-                    "κ≈",
-                ],
-                rows=cluster_summary,
-            )
+            if cluster_summary:
+                self._log_section(
+                    "Clustering summary:",
+                    [
+                        (
+                            f"Cluster {cluster_id}: n={count}, medoid index={medoid_index}, "
+                            f"VMF mean trend={mean_trend}, plunge={mean_plunge}, "
+                            f"R̄={rbar}, κ≈{kappa}"
+                        )
+                        for (
+                            cluster_id,
+                            count,
+                            medoid_index,
+                            mean_trend,
+                            mean_plunge,
+                            rbar,
+                            kappa,
+                        ) in cluster_summary
+                    ],
+                )
+            elif self.chk_kmedoids.isChecked():
+                self.append_log("Clustering summary: no non-empty clusters to report.")
 
-            self._set_table(
-                self.tests_table,
-                headers=["Test", "H0", "Statistic", "p-value", "Decision"],
-                rows=[("Not implemented yet", "", "", "", "")],
-            )
+            self.append_log("Hypothesis tests summary: not implemented yet.")
 
             # save only on request
             if self.chk_save.isChecked():
@@ -715,15 +743,29 @@ class StereoGisDialog(QDialog):
                         "qAttitude",
                         "Save enabled, but output directory is invalid.",
                     )
+                    self.append_log("Save requested, but output directory is invalid.")
                     return
+
+                out_path = os.path.join(out_dir, "stereonet.png")
                 self.fig.savefig(
-                    os.path.join(out_dir, "stereonet.png"),
+                    out_path,
                     dpi=200,
                     bbox_inches="tight",
                 )
+                self.append_log(f"Figure saved to: {out_path}")
+
+                log_path = os.path.join(out_dir, "stereonet_log.txt")
+                with open(log_path, "w", encoding="utf-8") as f:
+                    f.write(self.log_output.toPlainText())
+                    if not self.log_output.toPlainText().endswith("\n"):
+                        f.write("\n")
+                self.append_log(f"Log saved to: {log_path}")
+
+            self.append_log("Analysis completed successfully.")
 
         except Exception as e:
             tb = traceback.format_exc()
+            self.append_log(f"ERROR: {type(e).__name__}: {e}")
             QMessageBox.critical(
                 self, "qAttitude", f"Error: {type(e).__name__}: {e}\n\n{tb}"
             )
