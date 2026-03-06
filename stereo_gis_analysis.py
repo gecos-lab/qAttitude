@@ -3,6 +3,7 @@
 
 import math
 import numpy as np
+from kmedoids import KMedoids
 from qgis.core import QgsProcessingException
 
 
@@ -70,8 +71,6 @@ def vmf_mean_axial(vectors_xyz: np.ndarray, log=None) -> dict:
 
     _log(log, f"VMF: input vectors shape = {vectors_xyz.shape}")
 
-    vectors_both = np.vstack([vectors_xyz, mirror_to_other_hemisphere(vectors_xyz)])
-
     V = np.array([mirror_to_other_hemisphere(v) for v in vectors_xyz], dtype=float)
     S = V.sum(axis=0)
     S_norm = float(np.linalg.norm(S))
@@ -133,7 +132,14 @@ def kmedoids_pam_axial(
     init_medoids: np.ndarray | None = None,
     log=None,
 ):
-    # _________________________________________________________________
+    # NEW _________________________________________________________________
+
+
+
+    vectors_both = np.vstack([vectors_xyz, mirror_to_other_hemisphere(vectors_xyz)])
+
+    # OLD _________________________________________________________________
+
     n = vectors_xyz.shape[0]
     if n == 0:
         raise QgsProcessingException("No vectors to cluster.")
