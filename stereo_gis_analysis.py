@@ -134,9 +134,10 @@ def kmedoids_pam_axial(
 ):
     # NEW _________________________________________________________________
 
-
-
     vectors_both = np.vstack([vectors_xyz, mirror_to_other_hemisphere(vectors_xyz)])
+    init = 'random'  # Supported inits are 'random', 'first' and 'build'.
+    kmedoids = KMedoids(n_clusters=(k * 2), random_state=0, method='pam', init=init).fit(vectors_both)
+    _log(log, f"medoids: {kmedoids.cluster_centers_}")
 
     # OLD _________________________________________________________________
 
