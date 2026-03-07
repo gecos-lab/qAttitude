@@ -132,14 +132,8 @@ def kmedoids_pam_axial(
     init_medoids: np.ndarray | None = None,
     log=None,
 ):
-    # NEW _________________________________________________________________
 
-    vectors_both = np.vstack([vectors_xyz, mirror_to_other_hemisphere(vectors_xyz)])
-    init = 'random'  # Supported inits are 'random', 'first' and 'build'.
-    kmedoids = KMedoids(n_clusters=(k * 2), random_state=0, method='pam', init=init).fit(vectors_both)
-    _log(log, f"medoids: {kmedoids.cluster_centers_}")
-
-    # OLD _________________________________________________________________
+    #     # NEW _________________________________________________________________
 
     n = vectors_xyz.shape[0]
     if n == 0:
@@ -149,51 +143,72 @@ def kmedoids_pam_axial(
 
     _log(log, f"k-medoids: n={n}, k={k}, maxiter={maxiter}")
 
-    V = np.array([v / np.linalg.norm(v) for v in vectors_xyz], dtype=float)
+    vectors_both = np.vstack([vectors_xyz, mirror_to_other_hemisphere(vectors_xyz)])
 
-    D = np.zeros((n, n), dtype=float)
-    for i in range(n):
-        for j in range(i + 1, n):
-            d = axial_angular_distance(V[i], V[j])
-            D[i, j] = d
-            D[j, i] = d
+    init = 'random'  # Supported inits are 'random', 'first' and 'build'.
+    _log(log, "1")
+    kmedoids = KMedoids(n_clusters=k, init='random', metric=axial_angular_distance).fit(vectors_both)
 
-    if init_medoids is None:
-        medoids = np.arange(k, dtype=int)
-        _log(log, f"k-medoids: default initial medoids = {medoids.tolist()}")
-    else:
-        medoids = np.array(init_medoids, dtype=int)
-        if medoids.size != k:
-            raise QgsProcessingException("init_medoids must have length k")
-        _log(log, f"k-medoids: provided initial medoids = {medoids.tolist()}")
-
-    labels = np.zeros(n, dtype=int)
-
-    for iteration in range(int(maxiter)):
-        dist_to_m = D[:, medoids]
-        labels_new = np.argmin(dist_to_m, axis=1)
-
-        medoids_new = medoids.copy()
-        for ci in range(k):
-            idx = np.where(labels_new == ci)[0]
-            if idx.size == 0:
-                continue
-            intra = D[np.ix_(idx, idx)]
-            costs = intra.sum(axis=1)
-            medoids_new[ci] = int(idx[np.argmin(costs)])
-
-        if np.array_equal(medoids_new, medoids) and np.array_equal(labels_new, labels):
-            labels = labels_new
-            medoids = medoids_new
-            _log(log, f"k-medoids: converged at iteration {iteration + 1}")
-            break
-
-        labels = labels_new
-        medoids = medoids_new
-    else:
-        _log(log, "k-medoids: reached maximum iterations without early convergence")
+    labels = kmedoids.labels_[:n]
+    medoids = kmedoids.medoid_indices_
 
     _log(log, f"k-medoids: final medoids = {medoids.tolist()}")
+
+    # OLD _________________________________________________________________
+
+    # n = vectors_xyz.shape[0]
+    # if n == 0:
+    #     raise QgsProcessingException("No vectors to cluster.")
+    # if not (1 <= k <= n):
+    #     raise QgsProcessingException(f"k must be in [1, {n}]")
+    #
+    # _log(log, f"k-medoids: n={n}, k={k}, maxiter={maxiter}")
+    #
+    # V = np.array([v / np.linalg.norm(v) for v in vectors_xyz], dtype=float)
+    #
+    # D = np.zeros((n, n), dtype=float)
+    # for i in range(n):
+    #     for j in range(i + 1, n):
+    #         d = axial_angular_distance(V[i], V[j])
+    #         D[i, j] = d
+    #         D[j, i] = d
+    #
+    # if init_medoids is None:
+    #     medoids = np.arange(k, dtype=int)
+    #     _log(log, f"k-medoids: default initial medoids = {medoids.tolist()}")
+    # else:
+    #     medoids = np.array(init_medoids, dtype=int)
+    #     if medoids.size != k:
+    #         raise QgsProcessingException("init_medoids must have length k")
+    #     _log(log, f"k-medoids: provided initial medoids = {medoids.tolist()}")
+    #
+    # labels = np.zeros(n, dtype=int)
+    #
+    # for iteration in range(int(maxiter)):
+    #     dist_to_m = D[:, medoids]
+    #     labels_new = np.argmin(dist_to_m, axis=1)
+    #
+    #     medoids_new = medoids.copy()
+    #     for ci in range(k):
+    #         idx = np.where(labels_new == ci)[0]
+    #         if idx.size == 0:
+    #             continue
+    #         intra = D[np.ix_(idx, idx)]
+    #         costs = intra.sum(axis=1)
+    #         medoids_new[ci] = int(idx[np.argmin(costs)])
+    #
+    #     if np.array_equal(medoids_new, medoids) and np.array_equal(labels_new, labels):
+    #         labels = labels_new
+    #         medoids = medoids_new
+    #         _log(log, f"k-medoids: converged at iteration {iteration + 1}")
+    #         break
+    #
+    #     labels = labels_new
+    #     medoids = medoids_new
+    # else:
+    #     _log(log, "k-medoids: reached maximum iterations without early convergence")
+    #
+    # _log(log, f"k-medoids: final medoids = {medoids.tolist()}")
 
     return labels, medoids
 
