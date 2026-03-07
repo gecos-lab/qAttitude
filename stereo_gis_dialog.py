@@ -49,7 +49,7 @@ from .stereo_gis_analysis import (
     vmf_mean_axial,
     bingham_principal_axes_axial,
     kmedoids_pam_axial,
-    xyz_to_trend_plunge,
+    lmn_to_trend_plunge,
     wrap360,
     dipdir2strike,
 )
@@ -536,7 +536,7 @@ class StereoGisDialog(QDialog):
                 vmf = vmf_mean_axial(vectors_xyz, log=self.append_log)
                 m = vmf["mean_xyz"]
                 if np.isfinite(m).all():
-                    tr, pl = xyz_to_trend_plunge(m)
+                    tr, pl = lmn_to_trend_plunge(m)
                     self.ax.line(pl, tr, "r*", markersize=12)
                     self.append_log(
                         f"VMF mean plotted at trend={tr:.2f}, plunge={pl:.2f} in red."
@@ -546,7 +546,7 @@ class StereoGisDialog(QDialog):
                 self.append_log("Computing Bingham principal axes...")
                 b = bingham_principal_axes_axial(vectors_xyz, log=self.append_log)
                 beta = b["beta_axis_xyz"]
-                tr, pl = xyz_to_trend_plunge(beta)
+                tr, pl = lmn_to_trend_plunge(beta)
                 self.ax.line(pl, tr, "D", color="#1f77b4", markersize=7)
 
                 dipdir = wrap360(tr + 180)
@@ -668,7 +668,7 @@ class StereoGisDialog(QDialog):
                 vmf_c = vmf_mean_axial(vectors_xyz[idx], log=self.append_log)
                 mean_xyz = vmf_c["mean_xyz"]
                 m_tr, m_pl = (
-                    xyz_to_trend_plunge(mean_xyz)
+                    lmn_to_trend_plunge(mean_xyz)
                     if np.isfinite(mean_xyz).all()
                     else (float("nan"), float("nan"))
                 )

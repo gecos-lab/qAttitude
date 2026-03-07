@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 # qAttitude @ Andrea Bistacchi 2024-06-26
 
-import math
 import numpy as np
+import pandas as pd
 from kmedoids import KMedoids
 from qgis.core import QgsProcessingException
 
@@ -12,66 +12,64 @@ def _log(log, message: str) -> None:
         log(message)
 
 
-def wrap360(deg: float) -> float:
+def wrap360(deg):
     deg = deg % 360.0
     return deg
 
 
-def deg2rad(deg: float) -> float:
-    return deg * math.pi / 180.0
+def deg2rad(deg):
+    return deg * np.pi / 180.0
 
 
-def rad2deg(rad: float) -> float:
-    return rad * 180.0 / math.pi
+def rad2deg(rad):
+    return rad * 180.0 / np.pi
 
 
-def trend_plunge_to_xyz(trend_deg: float, plunge_deg: float) -> np.ndarray:
-    trend_rad = deg2rad(trend_deg)
-    plunge_rad = deg2rad(plunge_deg)
-    x = np.cos(plunge_rad) * np.cos(trend_rad)  # East
-    y = np.cos(plunge_rad) * np.sin(trend_rad)  # North
-    z = -np.sin(plunge_rad)  # Up (negative is down-plunge)
-    v = np.array([x, y, z], dtype=float)
-    return v
+def trend_plunge_to_lmn(trend, plunge):
+    trend_rad = deg2rad(trend)
+    plunge_rad = deg2rad(plunge)
+    l = np.cos(plunge_rad) * np.cos(trend_rad)  # East
+    m = np.cos(plunge_rad) * np.sin(trend_rad)  # North
+    n = -np.sin(plunge_rad)  # Up (negative is down-plunge)
+    return l, m, n
 
 
-def xyz_to_trend_plunge(v: np.ndarray) -> tuple[float, float]:
-    x, y, z = float(v[0]), float(v[1]), float(v[2])
-    plunge_rad = np.arcsin(-z)
-    trend_rad = np.arctan2(x, y)
-    plunge_deg = wrap360(rad2deg(plunge_rad))
-    trend_deg = wrap360(rad2deg(trend_rad))
-    return trend_deg, plunge_deg
+def lmn_to_trend_plunge(l, m, n):
+    plunge_rad = np.arcsin(-n)
+    trend_rad = np.arctan2(l, m)
+    plunge = wrap360(rad2deg(plunge_rad))
+    trend = wrap360(rad2deg(trend_rad))
+    return trend, plunge
 
 
-def dipdir_dip_to_pole_xyz(dipdir_deg: float, dip_deg: float) -> np.ndarray:
-    pole_trend_deg = wrap360(dipdir_deg + 180)
-    pole_plunge_deg = 90.0 - dip_deg
-    return trend_plunge_to_xyz(pole_trend_deg, pole_plunge_deg)
+def dipdir_dip_to_pole_lmn(dipdir, dip):
+    pole_trend = wrap360(dipdir + 180)
+    pole_plunge = 90.0 - dip
+    return trend_plunge_to_lmn(pole_trend, pole_plunge)
 
 
-def dipdir2strike(dipdir_deg: float) -> float:
-    strike_deg = wrap360(dipdir_deg - 90.0)
-    return strike_deg
+def dipdir2strike(dipdir):
+    strike = wrap360(dipdir - 90.0)
+    return strike
 
 
-def strike2dipdir(strike_deg: float) -> float:
-    dipdir_deg = wrap360(strike_deg + 90.0)
-    return dipdir_deg
+def strike2dipdir(strike):
+    dipdir = wrap360(strike + 90.0)
+    return dipdir
 
 
-def mirror_to_other_hemisphere(v: np.ndarray) -> np.ndarray:
-    return -v
+def mirror_to_other_hemisphere(l, m, n):
+    return -l, -m, -n
 
 
-def vmf_mean_axial(vectors_xyz: np.ndarray, log=None) -> dict:
+def vmf_mean_axial(vector_xyz: np.ndarray, log=None) -> dict:
     # _________________________________________________________________
-    if vectors_xyz.shape[0] == 0:
+    if vector_xyz.shape[0] == 0:
         raise QgsProcessingException("No vectors for VMF.")
 
-    _log(log, f"VMF: input vectors shape = {vectors_xyz.shape}")
+    _log(log, f"VMF: input vectors shape = {vector_xyz.shape}")
 
-    V = np.array([mirror_to_other_hemisphere(v) for v in vectors_xyz], dtype=float)
+    V = np.array([mirror_to_other_hemisphere(v) for v in vector_xyz], dtype=float)
     S = V.sum(axis=0)
     S_norm = float(np.linalg.norm(S))
     if S_norm == 0.0:
@@ -93,14 +91,14 @@ def vmf_mean_axial(vectors_xyz: np.ndarray, log=None) -> dict:
     return {"mean_xyz": mean_xyz, "Rbar": Rbar, "kappa": kappa}
 
 
-def bingham_principal_axes_axial(vectors_xyz: np.ndarray, log=None) -> dict:
+def bingham_principal_axes_axial(vector_xyz: np.ndarray, log=None) -> dict:
     # _________________________________________________________________
-    if vectors_xyz.shape[0] == 0:
+    if vector_xyz.shape[0] == 0:
         raise QgsProcessingException("No vectors for Bingham summary.")
 
-    _log(log, f"Bingham: input vectors shape = {vectors_xyz.shape}")
+    _log(log, f"Bingham: input vectors shape = {vector_xyz.shape}")
 
-    V = np.array([mirror_to_other_hemisphere(v) for v in vectors_xyz], dtype=float)
+    V = np.array([mirror_to_other_hemisphere(v) for v in vector_xyz], dtype=float)
     V = V / np.linalg.norm(V, axis=1, keepdims=True)
 
     T = (V.T @ V) / V.shape[0]
@@ -126,7 +124,7 @@ def axial_angular_distance(u: np.ndarray, v: np.ndarray) -> float:
 
 
 def kmedoids_pam_axial(
-    vectors_xyz: np.ndarray,
+    vector_xyz: np.ndarray,
     k: int,
     maxiter: int = 100,
     init_medoids: np.ndarray | None = None,
@@ -135,7 +133,7 @@ def kmedoids_pam_axial(
 
     #     # NEW _________________________________________________________________
 
-    n = vectors_xyz.shape[0]
+    n = vector_xyz.shape[0]
     if n == 0:
         raise QgsProcessingException("No vectors to cluster.")
     if not (1 <= k <= n):
@@ -143,7 +141,7 @@ def kmedoids_pam_axial(
 
     _log(log, f"k-medoids: n={n}, k={k}, maxiter={maxiter}")
 
-    vectors_both = np.vstack([vectors_xyz, mirror_to_other_hemisphere(vectors_xyz)])
+    vectors_both = np.vstack([vector_xyz, mirror_to_other_hemisphere(vector_xyz)])
 
     init = 'random'  # Supported inits are 'random', 'first' and 'build'.
     _log(log, "1")
@@ -156,7 +154,7 @@ def kmedoids_pam_axial(
 
     # OLD _________________________________________________________________
 
-    # n = vectors_xyz.shape[0]
+    # n = vector_xyz.shape[0]
     # if n == 0:
     #     raise QgsProcessingException("No vectors to cluster.")
     # if not (1 <= k <= n):
@@ -164,7 +162,7 @@ def kmedoids_pam_axial(
     #
     # _log(log, f"k-medoids: n={n}, k={k}, maxiter={maxiter}")
     #
-    # V = np.array([v / np.linalg.norm(v) for v in vectors_xyz], dtype=float)
+    # V = np.array([v / np.linalg.norm(v) for v in vector_xyz], dtype=float)
     #
     # D = np.zeros((n, n), dtype=float)
     # for i in range(n):
@@ -219,10 +217,8 @@ def read_orientations_from_layer_selection(
     """
     Reads orientations from the layer.
     Uses selected features if any are selected; otherwise uses all features.
-
-    Planes: field1=dip,    field2=dipdir -> vectors are POLES.
-    Lines:  field1=plunge, field2=trend  -> vectors are lines.
     """
+    # first read lists of data irrespective of plane vs. line
     idx1 = layer.fields().indexOf(field1)
     idx2 = layer.fields().indexOf(field2)
     if idx1 < 0 or idx2 < 0:
@@ -237,13 +233,8 @@ def read_orientations_from_layer_selection(
         f"using fields '{field1}' and '{field2}'.",
     )
 
-    vectors = []
-    strikes = []
-    dips = []
-    dipdirs = []
-    trends = []
-    plunges = []
-
+    in_list_1 = []
+    in_list_2 = []
     invalid_count = 0
 
     for f in feats:
@@ -265,40 +256,50 @@ def read_orientations_from_layer_selection(
         if not (0.0 <= v2 <= 360.0):
             invalid_count += 1
             continue
+        in_list_1.append(v1)
+        in_list_2.append(v2)
+    in_list_1 = np.array(in_list_1)
+    in_list_2 = np.array(in_list_2)
 
-        if is_planes:
-            dip = v1
-            dipdir = v2
-            pole_trend = wrap360(dipdir + 180)
-            pole_plunge = 90.0 - dip
-            pole_xyz = dipdir_dip_to_pole_xyz(dipdir, dip)
+    # now populate the dataframe according to plane vs. line
+    data_lower = pd.DataFrame({})
+    if is_planes:
+        data_lower['dip'] = in_list_1
+        data_lower['dipdir'] = in_list_2
+        data_lower['strike'] = dipdir2strike(in_list_2)
+        data_lower['plunge'] = 90.0 - in_list_1
+        data_lower['trend'] = wrap360(in_list_2 + 180)
+        l, m, n = dipdir_dip_to_pole_lmn(in_list_2, in_list_1)
+        data_lower['l'] = l
+        data_lower['m'] = m
+        data_lower['n'] = n
+        data_lower['label'] = 0
+        data_lower['lower_hemi'] = 1
+    else:
+        data_lower['plunge'] = in_list_1
+        data_lower['trend'] = in_list_2
+        l, m, n = trend_plunge_to_lmn(in_list_2, in_list_1)
+        data_lower['l'] = l
+        data_lower['m'] = m
+        data_lower['n'] = n
+        data_lower['label'] = 0
+        data_lower['lower_hemi'] = 1
 
-            vectors.append(pole_xyz)
-            dips.append(dip)
-            dipdirs.append(dipdir)
-            strikes.append(dipdir2strike(dipdir))
-            trends.append(pole_trend)
-            plunges.append(pole_plunge)
-        else:
-            plunge = v1
-            trend = v2
-            line_xyz = trend_plunge_to_xyz(trend, plunge)
-            vectors.append(line_xyz)
-            trends.append(trend)
-            plunges.append(plunge)
+    # now duplicate the data to perform axially symmetric orientation analysis
+    data_upper = data_lower.copy()
+    data_upper['l'] = -data_upper['l']
+    data_upper['m'] = -data_upper['m']
+    data_upper['n'] = -data_upper['n']
+    data_upper['lower_hemi'] = 0
 
-    vectors_xyz = np.asarray(vectors, dtype=float)
+    data_both = pd.concat([data_lower, data_upper])
 
     _log(
         log,
-        f"Orientation reading complete: valid={vectors_xyz.shape[0]}, invalid/skipped={invalid_count}.",
+        f"Orientation reading complete: valid={data_lower.shape[0]}, invalid/skipped={invalid_count}.",
     )
-
-    return {
-        "vectors_xyz": vectors_xyz,
-        "strikes_deg": np.asarray(strikes, dtype=float) if strikes else None,
-        "dipdirs_deg": np.asarray(dipdirs, dtype=float) if dipdirs else None,
-        "dips_deg": np.asarray(dips, dtype=float) if dips else None,
-        "trends_deg": np.asarray(trends, dtype=float),
-        "plunges_deg": np.asarray(plunges, dtype=float),
-    }
+    _log(
+        log,
+        data_both.head(),
+    )
+    return data_both
