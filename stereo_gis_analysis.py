@@ -4,6 +4,7 @@
 import numpy as np
 import pandas as pd
 from kmedoids import KMedoids
+from sklearn.cluster import KMeans
 from qgis.core import QgsProcessingException
 
 
@@ -198,6 +199,82 @@ def kmedoids_axial(
     _log(log, f"kept medoids - lower hemisphere: {medoids.to_string()}")
 
     return data_both, medoids
+
+
+def kmeans(
+        data_both,
+        nn_clusters = 1,
+        init = 'k-means++',
+        max_iter = 100,
+        random_state = None,
+        log=None,
+):
+    """
+    Calculate k-medoids clustering for axial orientation analysis, using the scikit-learn library.
+    https://github.com/kno10/python-kmedoids
+    https://python-kmedoids.readthedocs.io/en/latest/
+    Method for initialization:
+        ‘k-means++’ : selects initial cluster centroids using sampling based on an empirical probability
+        distribution of the points’ contribution to the overall inertia. This technique speeds up convergence.
+        The algorithm implemented is “greedy k-means++”. It differs from the vanilla k-means++ by making
+        several trials at each sampling step and choosing the best centroid among them.
+
+        ‘random’: choose n_clusters observations (rows) at random from data for the initial centroids.
+
+        If an array is passed, it should be of shape (n_clusters, n_features) and gives the initial centers.
+
+        If a callable is passed, it should take arguments X, n_clusters and a random state and return an initialization.
+
+    Variables:
+        cluster_centers – None for ‘precomputed’
+
+        medoid_indices – The indices of the medoid rows in X
+
+        labels – Labels of each point
+
+        inertia – Sum of distances of samples to their closest cluster center
+    """
+    # initialize
+    n = data_both.shape[0]
+    if n == 0:
+        raise QgsProcessingException("No vectors to cluster.")
+    if not (1 <= k <= n):
+        raise QgsProcessingException(f"k must be in [1, {n}]")
+    _log(log, f"k-medoids: n={n}, k={k}, maxiter={maxiter}")
+
+    # run clustering
+    vectors = data_both[['l', 'm', 'n']].values
+    kmeans = KMeans(nn_clusters=nn_clusters*2,
+                    init=init,
+                    n_init='auto',
+                    max_iter=max_iter,
+                    tol=0.0001,
+                    verbose=0,
+                    random_state=random_state,
+                    copy_x=True,
+                    algorithm='lloyd').fit(vectors)
+
+    # write results in dataframe
+    data_both['cluster'] = kmeans.labels_
+
+    # show results
+    _log(log, f"medoids: {kmeans.cluster_centers_}")
+    _log(log, f"data_both['cluster'].unique(): {data_both['cluster'].unique()}")
+
+    means = pd.DataFrame(kmeans.cluster_centers_, columns=['l', 'm', 'n'])
+    means['cluster'] = np.arange(means.shape[0])
+    means['plunge'] = lmn_to_trend_plunge(means['l'], means['m'], means['n'])[1]
+    means['trend'] = lmn_to_trend_plunge(means['l'], means['m'], means['n'])[0]
+    means['lower_hemi'] = means['n'] <= 0
+
+    _log(log, f"all means: {means.to_string()}")
+
+    # keep clusters with medoid pointing downwards only
+    means = means.loc[means['lower_hemi'] == True].reset_index(drop=True)
+    _log(log, f"n kept means - downwards only: {means.shape[0]}")
+    _log(log, f"kept means - lower hemisphere: {means.to_string()}")
+
+    return data_both, means
 
 
 def read_orientations_from_layer_selection(
