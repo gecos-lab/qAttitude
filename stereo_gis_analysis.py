@@ -274,7 +274,7 @@ def read_orientations_from_layer_selection(
         data_lower['m'] = m
         data_lower['n'] = n
         data_lower['label'] = 0
-        data_lower['lower_hemi'] = 1
+        data_lower['lower_hemi'] = True
     else:
         data_lower['plunge'] = in_list_1
         data_lower['trend'] = in_list_2
@@ -283,14 +283,14 @@ def read_orientations_from_layer_selection(
         data_lower['m'] = m
         data_lower['n'] = n
         data_lower['label'] = 0
-        data_lower['lower_hemi'] = 1
+        data_lower['lower_hemi'] = True
 
     # now duplicate the data to perform axially symmetric orientation analysis
     data_upper = data_lower.copy()
     data_upper['l'] = -data_upper['l']
     data_upper['m'] = -data_upper['m']
     data_upper['n'] = -data_upper['n']
-    data_upper['lower_hemi'] = 0
+    data_upper['lower_hemi'] = False
 
     data_both = pd.concat([data_lower, data_upper])
 
