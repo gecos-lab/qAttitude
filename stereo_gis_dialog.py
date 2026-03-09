@@ -48,7 +48,7 @@ from .stereo_gis_analysis import (
     read_orientations_from_layer_selection,
     vmf_mean_axial,
     bingham_principal_axes_axial,
-    kmedoids_pam_axial,
+    kmedoids_axial,
     lmn_to_trend_plunge,
     wrap360,
     dipdir2strike,
@@ -219,11 +219,14 @@ class StereoGisDialog(QDialog):
 
         self.chk_vmf = QCheckBox("Plot Von Mises-Fisher mean (red)")
         self.chk_vmf.setChecked(False)
+        self.chk_kent = QCheckBox("Plot Kent mean (green)")
+        self.chk_kent.setChecked(False)
         self.chk_bingham = QCheckBox("Plot Bingham β axis & girdle (blue)")
         self.chk_bingham.setChecked(False)
 
         gridp.addWidget(self.chk_vmf, 3, 0, 1, 2)
-        gridp.addWidget(self.chk_bingham, 4, 0, 1, 2)
+        gridp.addWidget(self.chk_kent, 4, 0, 1, 2)
+        gridp.addWidget(self.chk_bingham, 5, 0, 1, 2)
 
         # Saving
         g_save = QGroupBox("Save to files (off by default)")
@@ -256,6 +259,7 @@ class StereoGisDialog(QDialog):
 
         self.ax = self.fig.add_subplot(111, projection="stereonet")
         self.ax.grid(True)
+        # self.ax.grid(kind="polar")
         self.canvas.mpl_connect("button_press_event", self._on_plot_click)
 
         g_log = QGroupBox("Log")
@@ -348,9 +352,48 @@ class StereoGisDialog(QDialog):
         self.field2_combo.clear()
         if not layer:
             return
-        for f in layer.fields():
-            self.field1_combo.addItem(f.name())
-            self.field2_combo.addItem(f.name())
+        preferred1 = [
+            'dip',
+            'Dip',
+            'DIP',
+            'plunge',
+            'Plunge',
+            'PLUNGE',
+            'inc',
+            'Inc',
+            'INC'
+        ]
+        preferred2 = [
+            'dir',
+            'Dir',
+            'DIR',
+            'dipdir',
+            'DipDir',
+            'Dipdir',
+            'DIPDIR',
+            'plunge',
+            'Plunge',
+            'PLUNGE',
+            'imm',
+            'Imm',
+            'IMM',
+        ]
+        all_fields = [f.name() for f in layer.fields()]
+        for col in all_fields:
+            self.field1_combo.addItem(col)
+            self.field2_combo.addItem(col)
+        # Set preselected for field1_combo
+        for col in preferred1:
+            if col in all_fields:
+                idx = all_fields.index(col)
+                self.field1_combo.setCurrentIndex(idx)
+                break
+        # Set preselected for field1_combo
+        for col in preferred2:
+            if col in all_fields:
+                idx = all_fields.index(col)
+                self.field2_combo.setCurrentIndex(idx)
+                break
 
     def _refresh_field_controls(self):
         is_planes = self.data_combo.currentIndex() == 0
@@ -427,6 +470,7 @@ class StereoGisDialog(QDialog):
             self.fig.clear()
             self.ax = self.fig.add_subplot(111, projection="stereonet")
             self.ax.grid(True)
+            # self.ax.grid(kind="polar")
             # self.ax.set_title(title)
             self.canvas.draw()
         except Exception:
@@ -448,8 +492,14 @@ class StereoGisDialog(QDialog):
         is_planes = self.data_combo.currentIndex() == 0
         field1 = self.field1_combo.currentText()
         field2 = self.field2_combo.currentText()
+        show_individual = self.chk_individual.isChecked()
+        show_contours = self.chk_contours.isChecked()
+        plane_mode = self.plane_mode_combo.currentIndex()  # 0 poles,1 gcs,2 both
+        plot_poles = (not is_planes) or (plane_mode in (0, 2))
+        plot_gcs = is_planes and (plane_mode in (1, 2))
 
         try:
+            # start logging
             self.append_log("=" * 60)
             self.append_log("Starting analysis")
             self.append_log(f"Layer: {layer.name()}")
@@ -457,16 +507,19 @@ class StereoGisDialog(QDialog):
                 f"Mode: {'Planes (dip/dipdir)' if is_planes else 'Lines (plunge/trend)'}"
             )
             self.append_log(f"Fields: {field1}, {field2}")
+            self.append_log(
+                f"Plot options: individual={show_individual}, contours={show_contours}, "
+                f"plot_poles={plot_poles}, plot_great_circles={plot_gcs}"
+            )
 
+            # load data from layer
             data_both = read_orientations_from_layer_selection(
                 layer, is_planes, field1, field2, log=self.append_log
             )
 
-            # vectors_xyz = data_both["vectors_xyz"]
-            # n = int(vectors_xyz.shape[0])
+            # check data
             n = data_both.shape[0]
             self.append_log(f"Valid orientations loaded: {n}")
-
             if n == 0:
                 QMessageBox.warning(
                     self,
@@ -476,25 +529,11 @@ class StereoGisDialog(QDialog):
                 self._plot_empty()
                 return
 
-            # trends = data_both["trends_deg"]
-            # plunges = data_both["plunges_deg"]
-
             # clear plot
             self.fig.clear()
             self.ax = self.fig.add_subplot(111, projection="stereonet")
             self.ax.grid(True)
-
-            show_individual = self.chk_individual.isChecked()
-            show_contours = self.chk_contours.isChecked()
-
-            plane_mode = self.plane_mode_combo.currentIndex()  # 0 poles,1 gcs,2 both
-            plot_poles = (not is_planes) or (plane_mode in (0, 2))
-            plot_gcs = is_planes and (plane_mode in (1, 2))
-
-            self.append_log(
-                f"Plot options: individual={show_individual}, contours={show_contours}, "
-                f"plot_poles={plot_poles}, plot_great_circles={plot_gcs}"
-            )
+            self.ax.grid(kind="polar")
 
             # base plot
             query = "lower_hemi == True"
@@ -502,8 +541,8 @@ class StereoGisDialog(QDialog):
             # base plot - poles
             if show_individual and plot_poles:
                 self.ax.line(
-                    data_both.query(query)['plunge'],
-                    data_both.query(query)['trend'],
+                    data_both.query(query)['plunge'].to_list(),
+                    data_both.query(query)['trend'].to_list(),
                     "k.",
                     markersize=4, alpha=0.85
                 )
@@ -512,57 +551,15 @@ class StereoGisDialog(QDialog):
             # base plot - great circles
             if show_individual and plot_gcs:
                 self.ax.plane(
-                    data_both.query(query)["strike"],
-                    data_both.query(query)["dip"],
+                    data_both.query(query)["strike"].to_list(),
+                    data_both.query(query)["dip"].to_list(),
                     color="0.4",
                     linewidth=1,
                     alpha=1,
                 )
                 self.append_log(f"{n} great circles plotted.")
 
-            if show_contours:
-                self.ax.density_contourf(
-                    data_both.query(query)['plunge'],
-                    data_both.query(query)['trend'],
-                    measurement="lines",
-                    cmap="Greys",
-                    alpha=0.6,
-                    levels=int(self.contour_levels.value()),
-                )
-                self.append_log(
-                    f"Contours plotted with {int(self.contour_levels.value())} levels."
-                )
-
-            # overlays
-            # Von Mises-Fisher
-            if self.chk_vmf.isChecked():
-                self.append_log("Computing Von Mises-Fisher mean...")
-                vmf = vmf_mean_axial(vectors_xyz, log=self.append_log)
-                m = vmf["mean_xyz"]
-                if np.isfinite(m).all():
-                    tr, pl = lmn_to_trend_plunge(m)
-                    self.ax.line(pl, tr, "r*", markersize=12)
-                    self.append_log(
-                        f"VMF mean plotted at trend={tr:.2f}, plunge={pl:.2f} in red."
-                    )
-
-            # Bingham
-            if self.chk_bingham.isChecked():
-                self.append_log("Computing Bingham principal axes...")
-                b = bingham_principal_axes_axial(vectors_xyz, log=self.append_log)
-                beta = b["beta_axis_xyz"]
-                tr, pl = lmn_to_trend_plunge(beta)
-                self.ax.line(pl, tr, "D", color="#1f77b4", markersize=7)
-
-                dipdir = wrap360(tr + 180)
-                dip = 90.0 - pl
-                strike = dipdir2strike(dipdir)
-                self.ax.plane(strike, dip, color="#1f77b4", linewidth=1.4, alpha=0.85)
-                self.append_log(
-                    f"Bingham beta axis plotted at trend={tr:.2f}, plunge={pl:.2f}."
-                )
-
-            # k-medoids
+            # overlay: k-medoids
             if self.chk_plot_clusters.isChecked():
                 self.append_log("Running k-medoids...")
                 cluster_summary = []
@@ -600,8 +597,8 @@ class StereoGisDialog(QDialog):
                         f"Using automatic initial medoids: {init_medoids.tolist()}"
                     )
 
-                labels, medoids = kmedoids_pam_axial(
-                    vectors_xyz,
+                data_both, medoids = kmedoids_axial(
+                    data_both,
                     k=k,
                     maxiter=100,
                     init_medoids=init_medoids,
@@ -609,87 +606,44 @@ class StereoGisDialog(QDialog):
                 )
 
                 cmap = plt.get_cmap("tab10")
-                for ci in range(k):
-                    idx = np.where(labels == ci)[0]
-                    color = cmap(ci % 10)
+                for cluster in medoids['cluster'].to_list():
+                    query = "lower_hemi == True and cluster == " + str(cluster)
+                    color = cmap(cluster % 10)
 
                     if plot_poles:
-                        if is_planes:
-                            self.ax.pole(
-                                trends[idx],
-                                plunges[idx],
-                                ".",
-                                color=color,
-                                markersize=6,
-                                alpha=0.9,
-                            )
-                        else:
-                            self.ax.line(
-                                plunges[idx],
-                                trends[idx],
-                                ".",
-                                color=color,
-                                markersize=6,
-                                alpha=0.9,
-                            )
+                        self.ax.line(
+                            data_both.query(query)['plunge'].to_list(),
+                            data_both.query(query)['trend'].to_list(),
+                            ".",
+                            color=color,
+                            markersize=6,
+                            alpha=0.9,
+                        )
+                        self.append_log(f"plunge, trend for cluster {cluster}: {medoids.query(query)['plunge'].to_list()} , {medoids.query(query)['trend'].to_list()}")
+                        self.ax.line(
+                            medoids.query(query)['plunge'].to_list(),
+                            medoids.query(query)['trend'].to_list(),
+                            marker="*",
+                            color=color,
+                            markersize=14,
+                            markeredgecolor="k",
+                        )
 
-                    if (
-                        is_planes
-                        and plot_gcs
-                        and data_both.get("strikes_deg") is not None
-                        and data_both.get("dips_deg") is not None
-                    ):
+                    if plot_gcs:
                         self.ax.plane(
-                            data_both["strikes_deg"][idx],
-                            data_both["dips_deg"][idx],
+                            data_both.query(query)['strike'].to_list(),
+                            data_both.query(query)['dip'].to_list(),
                             color=color,
                             linewidth=1.0,
                             alpha=0.45,
                         )
-
-                for ci, mi in enumerate(medoids):
-                    color = cmap(ci % 10)
-                    if is_planes:
-                        self.ax.pole(
-                            [trends[mi]],
-                            [plunges[mi]],
-                            marker="*",
+                        self.ax.plane(
+                            data_both.query(query)['strike'].to_list(),
+                            data_both.query(query)['dip'].to_list(),
                             color=color,
-                            markersize=14,
-                            markeredgecolor="k",
+                            linewidth=4.0,
+                            alpha=1,
                         )
-                    else:
-                        self.ax.line(
-                            [plunges[mi]],
-                            [trends[mi]],
-                            marker="*",
-                            color=color,
-                            markersize=14,
-                            markeredgecolor="k",
-                        )
-
-                for ci in range(k):
-                    idx = np.where(labels == ci)[0]
-                    if idx.size == 0:
-                        continue
-                    vmf_c = vmf_mean_axial(vectors_xyz[idx], log=self.append_log)
-                    mean_xyz = vmf_c["mean_xyz"]
-                    m_tr, m_pl = (
-                        lmn_to_trend_plunge(mean_xyz)
-                        if np.isfinite(mean_xyz).all()
-                        else (float("nan"), float("nan"))
-                    )
-                    cluster_summary.append(
-                        (
-                            ci,
-                            int(idx.size),
-                            int(medoids[ci]),
-                            f"{m_tr:.2f}",
-                            f"{m_pl:.2f}",
-                            f"{vmf_c['Rbar']:.3f}",
-                            f"{vmf_c['kappa']:.3g}",
-                        )
-                    )
 
                 self.append_log("k-medoids clustering completed.")
 
@@ -706,32 +660,51 @@ class StereoGisDialog(QDialog):
                 self._last_projected = None
                 self.append_log("Could not cache projected plot coordinates.")
 
-            # self._last_vectors_xyz = vectors_xyz
-
-            if self.chk_plot_clusters.isChecked():
-                self._log_section(
-                    "Clustering summary:",
-                    [
-                        (
-                            f"Cluster {cluster_id}: n={count}, medoid index={medoid_index}, "
-                            f"VMF mean trend={mean_trend}, plunge={mean_plunge}, "
-                            f"R̄={rbar}, κ≈{kappa}"
-                        )
-                        for (
-                        cluster_id,
-                        count,
-                        medoid_index,
-                        mean_trend,
-                        mean_plunge,
-                        rbar,
-                        kappa,
-                    ) in cluster_summary
-                    ],
+            # base plot - contours
+            if show_contours:
+                self.ax.density_contourf(
+                    data_both.query(query)['plunge'],
+                    data_both.query(query)['trend'],
+                    measurement="lines",
+                    cmap="Greys",
+                    alpha=0.6,
+                    levels=int(self.contour_levels.value()),
                 )
-            else:
-                self.append_log("Clustering summary: no non-empty clusters to report.")
+                self.append_log(
+                    f"Contours plotted with {int(self.contour_levels.value())} levels."
+                )
 
-            self.append_log("Hypothesis tests summary: not implemented yet.")
+            # overlay: Von Mises-Fisher
+            if self.chk_vmf.isChecked():
+                self.append_log("Computing Von Mises-Fisher mean...")
+                vmf = vmf_mean_axial(vectors_xyz, log=self.append_log)
+                m = vmf["mean_xyz"]
+                if np.isfinite(m).all():
+                    tr, pl = lmn_to_trend_plunge(m)
+                    self.ax.line(pl, tr, "r*", markersize=12)
+                    self.append_log(
+                        f"VMF mean plotted at trend={tr:.2f}, plunge={pl:.2f} in red."
+                    )
+
+            # overlay: Von Mises-Fisher
+            if self.chk_kent.isChecked():
+                pass
+
+            # overlay: Bingham
+            if self.chk_bingham.isChecked():
+                self.append_log("Computing Bingham principal axes...")
+                b = bingham_principal_axes_axial(vectors_xyz, log=self.append_log)
+                beta = b["beta_axis_xyz"]
+                tr, pl = lmn_to_trend_plunge(beta)
+                self.ax.line(pl, tr, "D", color="#1f77b4", markersize=7)
+
+                dipdir = wrap360(tr + 180)
+                dip = 90.0 - pl
+                strike = dipdir2strike(dipdir)
+                self.ax.plane(strike, dip, color="#1f77b4", linewidth=1.4, alpha=0.85)
+                self.append_log(
+                    f"Bingham beta axis plotted at trend={tr:.2f}, plunge={pl:.2f}."
+                )
 
             # save only on request
             if self.chk_save.isChecked():

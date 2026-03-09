@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 # qAttitude @ Andrea Bistacchi 2024-06-26
 
+import os
 from qgis.PyQt.QtWidgets import QAction
 from qgis.PyQt.QtGui import QIcon
 
@@ -14,13 +15,16 @@ class StereoGisPlugin:
         self.dlg = None
 
     def initGui(self):
-        self.action = QAction(QIcon(), "qAttitude", self.iface.mainWindow())
+        icon_path = os.path.join(os.path.dirname(__file__), "icon.svg")
+        self.action = QAction(QIcon(icon_path), "qAttitude", self.iface.mainWindow())
         self.action.triggered.connect(self.run)
         self.iface.addPluginToMenu("qAttitude", self.action)
+        self.iface.addToolBarIcon(self.action)
 
     def unload(self):
         if self.action:
             self.iface.removePluginMenu("qAttitude", self.action)
+            self.iface.removeToolBarIcon(self.action)
             self.action = None
 
     def run(self):

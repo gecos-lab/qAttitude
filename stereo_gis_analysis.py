@@ -119,96 +119,85 @@ def bingham_principal_axes_axial(vector_xyz: np.ndarray, log=None) -> dict:
 def axial_angular_distance(u: np.ndarray, v: np.ndarray) -> float:
     dot = abs(np.dot(u, v))
     angle_rad = np.arccos(dot)
-    angle_deg = rad2deg(angle_rad)
-    return angle_deg
+    return angle_rad
 
 
-def kmedoids_pam_axial(
-    vector_xyz: np.ndarray,
+def kmedoids_axial(
+    data_both,
     k: int,
     maxiter: int = 100,
     init_medoids: np.ndarray | None = None,
     log=None,
 ):
+    """
+    Calculate k-medoids clustering for axial orientation analysis, using the kmedoids library
+    with sklearn-compatible API.
+    https://github.com/kno10/python-kmedoids
+    https://python-kmedoids.readthedocs.io/en/latest/
+    Parameters:
+        n_clusters (int) – The number of clusters to form (maximum number of clusters if method=”dynmsc”)
 
-    #     # NEW _________________________________________________________________
+        metric (string, default: 'precomputed') – It is recommended to use ‘precomputed’, in particular when
+        experimenting with different n_clusters. If you have sklearn installed, you may pass any metric
+        supported by sklearn.metrics.pairwise_distances.
 
-    n = vector_xyz.shape[0]
+        metric_params (dict, default=None) – Additional keyword arguments for the metric function.
+
+        method (string, "fasterpam" (default), "fastpam1", "pam", "alternate", "fastermsc", "fastmsc",
+        "pamsil" or "pammedsil") – Which algorithm to use
+
+        init (string, "random" (default), "first" or "build") – initialization method
+
+        max_iter (int) – Specify the maximum number of iterations when fitting
+
+        random_state (int, RandomState instance or None) – random seed if no medoids are given
+
+    Variables:
+        cluster_centers – None for ‘precomputed’
+
+        medoid_indices – The indices of the medoid rows in X
+
+        labels – Labels of each point
+
+        inertia – Sum of distances of samples to their closest cluster center
+    """
+    # initialize
+    n = data_both.shape[0]
     if n == 0:
         raise QgsProcessingException("No vectors to cluster.")
     if not (1 <= k <= n):
         raise QgsProcessingException(f"k must be in [1, {n}]")
-
     _log(log, f"k-medoids: n={n}, k={k}, maxiter={maxiter}")
-
-    vectors_both = np.vstack([vector_xyz, mirror_to_other_hemisphere(vector_xyz)])
-
     init = 'random'  # Supported inits are 'random', 'first' and 'build'.
-    _log(log, "1")
-    kmedoids = KMedoids(n_clusters=k, init='random', metric=axial_angular_distance).fit(vectors_both)
 
-    labels = kmedoids.labels_[:n]
-    medoids = kmedoids.medoid_indices_
+    # run clustering
+    vectors = data_both[['l', 'm', 'n']].values
+    kmedoids = KMedoids(n_clusters=k*2, init=init, metric=axial_angular_distance).fit(vectors)
 
-    _log(log, f"k-medoids: final medoids = {medoids.tolist()}")
+    # write results in dataframe
+    data_both['cluster'] = kmedoids.labels_
 
-    # OLD _________________________________________________________________
+    # show results
+    _log(log, f"medoids indices: {kmedoids.medoid_indices_}")
+    _log(log, f"medoids: {kmedoids.cluster_centers_}")
+    _log(log, f"data_both['cluster'].unique(): {data_both['cluster'].unique()}")
 
-    # n = vector_xyz.shape[0]
-    # if n == 0:
-    #     raise QgsProcessingException("No vectors to cluster.")
-    # if not (1 <= k <= n):
-    #     raise QgsProcessingException(f"k must be in [1, {n}]")
-    #
-    # _log(log, f"k-medoids: n={n}, k={k}, maxiter={maxiter}")
-    #
-    # V = np.array([v / np.linalg.norm(v) for v in vector_xyz], dtype=float)
-    #
-    # D = np.zeros((n, n), dtype=float)
-    # for i in range(n):
-    #     for j in range(i + 1, n):
-    #         d = axial_angular_distance(V[i], V[j])
-    #         D[i, j] = d
-    #         D[j, i] = d
-    #
-    # if init_medoids is None:
-    #     medoids = np.arange(k, dtype=int)
-    #     _log(log, f"k-medoids: default initial medoids = {medoids.tolist()}")
-    # else:
-    #     medoids = np.array(init_medoids, dtype=int)
-    #     if medoids.size != k:
-    #         raise QgsProcessingException("init_medoids must have length k")
-    #     _log(log, f"k-medoids: provided initial medoids = {medoids.tolist()}")
-    #
-    # labels = np.zeros(n, dtype=int)
-    #
-    # for iteration in range(int(maxiter)):
-    #     dist_to_m = D[:, medoids]
-    #     labels_new = np.argmin(dist_to_m, axis=1)
-    #
-    #     medoids_new = medoids.copy()
-    #     for ci in range(k):
-    #         idx = np.where(labels_new == ci)[0]
-    #         if idx.size == 0:
-    #             continue
-    #         intra = D[np.ix_(idx, idx)]
-    #         costs = intra.sum(axis=1)
-    #         medoids_new[ci] = int(idx[np.argmin(costs)])
-    #
-    #     if np.array_equal(medoids_new, medoids) and np.array_equal(labels_new, labels):
-    #         labels = labels_new
-    #         medoids = medoids_new
-    #         _log(log, f"k-medoids: converged at iteration {iteration + 1}")
-    #         break
-    #
-    #     labels = labels_new
-    #     medoids = medoids_new
-    # else:
-    #     _log(log, "k-medoids: reached maximum iterations without early convergence")
-    #
-    # _log(log, f"k-medoids: final medoids = {medoids.tolist()}")
+    medoids = pd.DataFrame(kmedoids.cluster_centers_, columns=['l', 'm', 'n'])
+    medoids['data_index'] = kmedoids.medoid_indices_
+    # Uses .iloc[row_positions, column_positions] to select by position
+    # medoids['data_index'] contains the row positions (0, 1, 2, ...)
+    # data_both.columns.get_indexer([...]) gets the column positions
+    # .values converts to numpy array and assigns to medoids
+    medoids[['plunge', 'trend', 'lower_hemi', 'cluster']] = data_both.iloc[medoids['data_index'], data_both.columns.get_indexer(['plunge', 'trend', 'lower_hemi', 'cluster'])].values
 
-    return labels, medoids
+    _log(log, f"all medoids: {medoids.to_string()}")
+
+    # keep clusters with medoid pointing downwards only
+    medoids = medoids.loc[medoids['lower_hemi'] == True].reset_index(drop=True)
+    _log(log, f"n kept medoids - downwards only: {medoids.shape[0]}")
+    _log(log, f"kept medoids - lower hemisphere: {medoids.to_string()}")
+
+    return data_both, medoids
 
 
 def read_orientations_from_layer_selection(
@@ -273,7 +262,7 @@ def read_orientations_from_layer_selection(
         data_lower['l'] = l
         data_lower['m'] = m
         data_lower['n'] = n
-        data_lower['label'] = 0
+        data_lower['cluster'] = None
         data_lower['lower_hemi'] = True
     else:
         data_lower['plunge'] = in_list_1
@@ -282,7 +271,7 @@ def read_orientations_from_layer_selection(
         data_lower['l'] = l
         data_lower['m'] = m
         data_lower['n'] = n
-        data_lower['label'] = 0
+        data_lower['cluster'] = None
         data_lower['lower_hemi'] = True
 
     # now duplicate the data to perform axially symmetric orientation analysis
@@ -292,7 +281,7 @@ def read_orientations_from_layer_selection(
     data_upper['n'] = -data_upper['n']
     data_upper['lower_hemi'] = False
 
-    data_both = pd.concat([data_lower, data_upper])
+    data_both = pd.concat([data_lower, data_upper]).reset_index(drop=True)
 
     _log(
         log,
@@ -300,6 +289,6 @@ def read_orientations_from_layer_selection(
     )
     _log(
         log,
-        data_both.head(),
+        data_both.iloc[0:10].to_string(),
     )
     return data_both

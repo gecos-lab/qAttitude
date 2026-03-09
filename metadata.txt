@@ -8,3 +8,4 @@ email=your_email@example.com
 about=Structural geology stereonet analysis for selected features only.
 category=Analysis
 plugin_dependencies=PackageInstallerQgis
+icon=icon.svg
