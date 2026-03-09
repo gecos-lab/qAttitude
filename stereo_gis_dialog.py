@@ -158,42 +158,6 @@ class StereoGisDialog(QDialog):
         self.layer_combo.currentIndexChanged.connect(self._refresh_fields)
         self.data_combo.currentIndexChanged.connect(self._refresh_field_controls)
 
-        # Plot options
-        g_plot = QGroupBox("Plot options")
-        left.addWidget(g_plot)
-        gridp = QGridLayout(g_plot)
-
-        self.chk_individual = QCheckBox("Plot individual data")
-        self.chk_individual.setChecked(True)
-        self.chk_contours = QCheckBox("Plot contours (points)")
-        self.chk_contours.setChecked(False)
-        self.contour_levels = QSpinBox()
-        self.contour_levels.setRange(3, 30)
-        self.contour_levels.setValue(10)
-
-        gridp.addWidget(self.chk_individual, 0, 0, 1, 2)
-        gridp.addWidget(self.chk_contours, 1, 0, 1, 1)
-        gridp.addWidget(QLabel("Levels:"), 1, 1)
-        gridp.addWidget(self.contour_levels, 1, 2)
-
-        self.plane_mode_combo = QComboBox()
-        self.plane_mode_combo.addItems(["Poles", "Great circles", "Both"])
-        gridp.addWidget(QLabel("Planes mode:"), 2, 0)
-        gridp.addWidget(self.plane_mode_combo, 2, 1, 1, 2)
-
-        # Means
-        g_means = QGroupBox("Parametric distribution fitting")
-        left.addWidget(g_means)
-        gridm = QGridLayout(g_means)
-
-        self.chk_vmf = QCheckBox("Plot Von Mises-Fisher mean (red)")
-        self.chk_vmf.setChecked(True)
-        self.chk_bingham = QCheckBox("Plot Bingham β axis & girdle (blue)")
-        self.chk_bingham.setChecked(True)
-
-        gridm.addWidget(self.chk_vmf, 0, 0, 1, 2)
-        gridm.addWidget(self.chk_bingham, 1, 0, 1, 2)
-
         # K-medoids
         g_km = QGroupBox("K-medoids clustering")
         left.addWidget(g_km)
@@ -226,6 +190,40 @@ class StereoGisDialog(QDialog):
 
         self.btn_pick.clicked.connect(self._toggle_picking)
         self.btn_clear_picks.clicked.connect(self._clear_picks)
+
+        # Plot options and Parametric distribution fitting
+        g_plot = QGroupBox("Plot options")
+        left.addWidget(g_plot)
+        gridp = QGridLayout(g_plot)
+
+        self.chk_individual = QCheckBox("Plot individual data")
+        self.chk_individual.setChecked(True)
+        self.chk_contours = QCheckBox("Plot contours (points)")
+        self.chk_contours.setChecked(False)
+        self.contour_levels = QSpinBox()
+        self.contour_levels.setRange(3, 30)
+        self.contour_levels.setValue(10)
+
+        gridp.addWidget(self.chk_individual, 0, 0, 1, 2)
+        gridp.addWidget(self.chk_contours, 1, 0, 1, 1)
+        gridp.addWidget(QLabel("Levels:"), 1, 1)
+        gridp.addWidget(self.contour_levels, 1, 2)
+
+        self.plane_mode_combo = QComboBox()
+        self.plane_mode_combo.addItems(["Poles", "Great circles", "Both"])
+        gridp.addWidget(QLabel("Planes mode:"), 2, 0)
+        gridp.addWidget(self.plane_mode_combo, 2, 1, 1, 2)
+
+        # Parametric distribution fitting (within Plot options)
+        gridp.addWidget(QLabel("Parametric distribution fitting:"), 3, 0, 1, 2)
+
+        self.chk_vmf = QCheckBox("Plot Von Mises-Fisher mean (red)")
+        self.chk_vmf.setChecked(True)
+        self.chk_bingham = QCheckBox("Plot Bingham β axis & girdle (blue)")
+        self.chk_bingham.setChecked(True)
+
+        gridp.addWidget(self.chk_vmf, 4, 0, 1, 2)
+        gridp.addWidget(self.chk_bingham, 5, 0, 1, 2)
 
         # Saving
         g_save = QGroupBox("Save to files (off by default)")
