@@ -11,6 +11,7 @@ if os.path.isdir(LIB) and LIB not in sys.path:
     sys.path.insert(0, LIB)
 
 import numpy as np
+import pandas as pd
 
 from qgis.PyQt.QtWidgets import (
     QDialog,
@@ -44,6 +45,7 @@ from matplotlib.figure import Figure
 import mplstereonet
 from mplstereonet import stereonet_math
 
+from . import stereo_gis_plot
 from .stereo_gis_analysis import (
     read_orientations_from_layer_selection,
     vmf_mean_axial,
@@ -100,9 +102,10 @@ class LayerDropGroupBox(QGroupBox):
 
 
 class StereoGisDialog(QDialog):
-    def __init__(self, iface):
+    def __init__(self, iface, plugin):
         super().__init__(iface.mainWindow())
         self.iface = iface
+        self.plugin = plugin
 
         self.analysis_layer = None
         self._layer_ids_by_index = []  # keeps combo index -> layer.id()
@@ -112,17 +115,24 @@ class StereoGisDialog(QDialog):
 
         self._picked_medoid_indices = []
         self._picking_enabled = False
-        # self._last_vectors_xyz = None
         self._last_projected = None
 
         self._init_ui()
-
-        # Initialize the plot area immediately (empty stereonet)
         self._plot_empty()
 
     def showEvent(self, event):
         super().showEvent(event)
+        # On first show, if no layer is set, try to use the active one
+        if self.analysis_layer is None:
+            active_layer = self.iface.activeLayer()
+            if active_layer and active_layer.type() == QgsMapLayer.VectorLayer:
+                self.set_analysis_layer(active_layer)
+
         self._populate_layers()
+        self._select_layer_in_combo(self.analysis_layer)
+        self._refresh_fields()
+        self._refresh_field_controls()
+        self._load_data_and_plot()
 
     def _init_ui(self):
         main = QHBoxLayout(self)
@@ -134,7 +144,7 @@ class StereoGisDialog(QDialog):
 
         # Inputs
         g_in = LayerDropGroupBox("Input layer (all or selected features)", self)
-        g_in.layerDropped.connect(self.set_analysis_layer)
+        g_in.layerDropped.connect(self.on_layer_dropped)
         left.addWidget(g_in)
         grid = QGridLayout(g_in)
 
@@ -156,9 +166,12 @@ class StereoGisDialog(QDialog):
         grid.addWidget(self.field2_label, 3, 0)
         grid.addWidget(self.field2_combo, 3, 1, 1, 3)
 
-        self.layer_combo.currentIndexChanged.connect(self._refresh_fields)
-        self.data_combo.currentIndexChanged.connect(self._refresh_field_controls)
+        self.layer_combo.currentIndexChanged.connect(self.on_layer_combo_changed)
+        self.data_combo.currentIndexChanged.connect(self.on_data_type_changed)
+        self.field1_combo.currentIndexChanged.connect(self._load_data_and_plot)
+        self.field2_combo.currentIndexChanged.connect(self._load_data_and_plot)
 
+        # ... (rest of the UI setup is the same)
         # K-medoids
         g_km = QGroupBox("K-medoids clustering")
         left.addWidget(g_km)
@@ -178,7 +191,7 @@ class StereoGisDialog(QDialog):
 
         gridk.addWidget(QLabel("Random seed:"), 2, 0)
         self.seed_spin = QSpinBox()
-        self.seed_spin.setRange(0, 10 ** 9)
+        self.seed_spin.setRange(0, 10**9)
         self.seed_spin.setValue(0)
         gridk.addWidget(self.seed_spin, 2, 1)
 
@@ -229,6 +242,61 @@ class StereoGisDialog(QDialog):
         gridp.addWidget(self.chk_kent, 4, 0, 1, 2)
         gridp.addWidget(self.chk_bingham, 5, 0, 1, 2)
 
+        gridp.addWidget(QLabel("Point/GCs Color:"), 6, 0)
+        self.point_color_combo = QComboBox()
+        self.point_color_combo.addItems(
+            [
+                "black",
+                "red",
+                "blue",
+                "green",
+                "cyan",
+                "magenta",
+                "yellow",
+                "purple",
+                "brown",
+                "lightgreen",
+                "olive",
+            ]
+        )
+        gridp.addWidget(self.point_color_combo, 6, 1)
+
+        gridp.addWidget(QLabel("Contour Color Map:"), 7, 0)
+        self.contour_cmap_combo = QComboBox()
+        cmaps = [
+            "Greys",
+            "Purples",
+            "Blues",
+            "Greens",
+            "Oranges",
+            "Reds",
+            "YlOrBr",
+            "YlOrRd",
+            "OrRd",
+            "PuRd",
+            "RdPu",
+            "BuPu",
+            "GnBu",
+            "PuBu",
+            "YlGnBu",
+            "PuBuGn",
+            "BuGn",
+            "YlGn",
+        ]
+        self.contour_cmap_combo.addItems(cmaps)
+        gridp.addWidget(self.contour_cmap_combo, 7, 1)
+
+        self.chk_individual.stateChanged.connect(self._update_plot)
+        self.plane_mode_combo.currentIndexChanged.connect(self._update_plot)
+        self.chk_contours.stateChanged.connect(self._update_plot)
+        self.contour_levels.valueChanged.connect(self._update_plot)
+        self.chk_plot_clusters.stateChanged.connect(self._update_plot)
+        self.k_spin.valueChanged.connect(self._update_plot)
+        self.chk_vmf.stateChanged.connect(self._update_plot)
+        self.chk_bingham.stateChanged.connect(self._update_plot)
+        self.point_color_combo.currentIndexChanged.connect(self._update_plot)
+        self.contour_cmap_combo.currentIndexChanged.connect(self._update_plot)
+
         # Saving
         g_save = QGroupBox("Save to files (off by default)")
         left.addWidget(g_save)
@@ -244,11 +312,6 @@ class StereoGisDialog(QDialog):
         grids.addWidget(self.out_dir, 1, 1)
         grids.addWidget(self.btn_browse, 1, 2)
         self.btn_browse.clicked.connect(self._browse_dir)
-
-        # Run
-        self.btn_run = QPushButton("Run analysis")
-        left.addWidget(self.btn_run)
-        self.btn_run.clicked.connect(self._run_analysis)
 
         left.addStretch(1)
 
@@ -277,12 +340,26 @@ class StereoGisDialog(QDialog):
         self.btn_clear_log.clicked.connect(self.clear_log)
         gridlog.addWidget(self.btn_clear_log, 1, 1)
 
-        self._refresh_field_controls()
+    def on_layer_dropped(self, layer):
+        self.set_analysis_layer(layer)
         self._populate_layers()
+        self._select_layer_in_combo(layer)
+        self._refresh_fields()
+        self._refresh_field_controls()
+        self._load_data_and_plot()
+
+    def on_layer_combo_changed(self):
+        layer = self._current_layer_from_combo()
+        self.set_analysis_layer(layer)
+        self._refresh_fields()
+        self._refresh_field_controls()
+        self._load_data_and_plot()
+
+    def on_data_type_changed(self):
+        self._refresh_field_controls()
+        self._load_data_and_plot()
 
     def _populate_layers(self):
-        current_layer = self._current_layer()
-
         self.layer_combo.blockSignals(True)
         self.layer_combo.clear()
         self._layer_ids_by_index = []
@@ -295,117 +372,102 @@ class StereoGisDialog(QDialog):
 
         self.layer_combo.blockSignals(False)
 
-        if current_layer is not None:
-            self._select_layer_in_combo(current_layer)
-        elif self.analysis_layer is not None:
-            self._select_layer_in_combo(self.analysis_layer)
-
-        self._refresh_fields()
-
     def _select_layer_in_combo(self, layer: QgsMapLayer) -> None:
-        """
-        Select the given layer in the combo if present.
-        """
         if layer is None:
             return
         try:
             idx = self._layer_ids_by_index.index(layer.id())
+            self.layer_combo.blockSignals(True)
+            self.layer_combo.setCurrentIndex(idx)
+            self.layer_combo.blockSignals(False)
         except ValueError:
-            return
-        self.layer_combo.setCurrentIndex(idx)
+            pass
 
     def set_analysis_layer(self, layer: QgsMapLayer):
-        """
-        Called when a layer is dropped onto the Input group box.
-        Make drag&drop update the same selection used by _current_layer().
-        """
-        if layer is None:
-            return
-        if layer.type() != QgsMapLayer.VectorLayer:
-            QMessageBox.warning(self, "qAttitude", "Please drop a vector layer.")
-            return
+        if self.analysis_layer:
+            try:
+                self.analysis_layer.selectionChanged.disconnect(
+                    self._load_data_and_plot
+                )
+            except TypeError:
+                pass
 
-        self.analysis_layer = layer
-        self._populate_layers()
-        self._select_layer_in_combo(layer)
-        self._refresh_fields()
-        self.append_log(f"Input layer set to: {layer.name()}")
+        if layer and layer.type() == QgsMapLayer.VectorLayer:
+            self.analysis_layer = layer
+            self.analysis_layer.selectionChanged.connect(self._load_data_and_plot)
+            self.append_log(f"Input layer set to: {layer.name()}")
+        else:
+            self.analysis_layer = None
 
-    def _current_layer(self) -> QgsMapLayer | None:
-        """
-        Return the currently selected layer.
-        Primary source: the UI selector (combo).
-        Secondary source: self.analysis_layer (if combo not available).
-        """
+    def _current_layer_from_combo(self) -> QgsMapLayer | None:
         if self.layer_combo.currentIndex() >= 0:
             idx = self.layer_combo.currentIndex()
             if 0 <= idx < len(self._layer_ids_by_index):
                 layer_id = self._layer_ids_by_index[idx]
-                lyr = QgsProject.instance().mapLayer(layer_id)
-                if lyr is not None:
-                    return lyr
-
-        return self.analysis_layer
+                return QgsProject.instance().mapLayer(layer_id)
+        return None
 
     def _refresh_fields(self):
-        layer = self._current_layer()
+        layer = self.analysis_layer
+
+        self.field1_combo.blockSignals(True)
+        self.field2_combo.blockSignals(True)
         self.field1_combo.clear()
         self.field2_combo.clear()
+
         if not layer:
+            self.field1_combo.blockSignals(False)
+            self.field2_combo.blockSignals(False)
             return
+
         preferred1 = [
-            'dip',
-            'Dip',
-            'DIP',
-            'plunge',
-            'Plunge',
-            'PLUNGE',
-            'inc',
-            'Inc',
-            'INC'
+            "dip",
+            "Dip",
+            "DIP",
+            "plunge",
+            "Plunge",
+            "PLUNGE",
+            "inc",
+            "Inc",
+            "INC",
         ]
         preferred2 = [
-            'dir',
-            'Dir',
-            'DIR',
-            'dipdir',
-            'DipDir',
-            'Dipdir',
-            'DIPDIR',
-            'plunge',
-            'Plunge',
-            'PLUNGE',
-            'imm',
-            'Imm',
-            'IMM',
+            "dir",
+            "Dir",
+            "DIR",
+            "dipdir",
+            "DipDir",
+            "Dipdir",
+            "DIPDIR",
+            "plunge",
+            "Plunge",
+            "PLUNGE",
+            "imm",
+            "Imm",
+            "IMM",
         ]
         all_fields = [f.name() for f in layer.fields()]
-        for col in all_fields:
-            self.field1_combo.addItem(col)
-            self.field2_combo.addItem(col)
-        # Set preselected for field1_combo
+
+        self.field1_combo.addItems(all_fields)
+        self.field2_combo.addItems(all_fields)
+
         for col in preferred1:
             if col in all_fields:
-                idx = all_fields.index(col)
-                self.field1_combo.setCurrentIndex(idx)
+                self.field1_combo.setCurrentIndex(all_fields.index(col))
                 break
-        # Set preselected for field1_combo
         for col in preferred2:
             if col in all_fields:
-                idx = all_fields.index(col)
-                self.field2_combo.setCurrentIndex(idx)
+                self.field2_combo.setCurrentIndex(all_fields.index(col))
                 break
+
+        self.field1_combo.blockSignals(False)
+        self.field2_combo.blockSignals(False)
 
     def _refresh_field_controls(self):
         is_planes = self.data_combo.currentIndex() == 0
-        if is_planes:
-            self.field1_label.setText("Dip field:")
-            self.field2_label.setText("DipDir field:")
-            self.plane_mode_combo.setEnabled(True)
-        else:
-            self.field1_label.setText("Plunge field:")
-            self.field2_label.setText("Trend field:")
-            self.plane_mode_combo.setEnabled(False)
+        self.field1_label.setText("Dip field:" if is_planes else "Plunge field:")
+        self.field2_label.setText("DipDir field:" if is_planes else "Trend field:")
+        self.plane_mode_combo.setEnabled(is_planes)
 
     def _browse_dir(self):
         d = QFileDialog.getExistingDirectory(self, "Select output directory", "")
@@ -428,16 +490,11 @@ class StereoGisDialog(QDialog):
         self.lbl_picks.setText("Picked: 0")
 
     def _on_plot_click(self, event):
-        if not self._picking_enabled:
-            return
-        if event.inaxes != self.ax:
-            return
-        if self._last_projected is None:
-            QMessageBox.information(
-                self,
-                "Pick medoid seeds",
-                "Run analysis first (to compute point projection), then pick medoid seeds.",
-            )
+        if (
+            not self._picking_enabled
+            or event.inaxes != self.ax
+            or self._last_projected is None
+        ):
             return
 
         k = int(self.k_spin.value())
@@ -457,379 +514,128 @@ class StereoGisDialog(QDialog):
             self._picking_enabled = False
             self.btn_pick.setText("Pick medoid seeds")
 
-    def _log_section(self, title: str, lines: list[str]) -> None:
-        self.append_log(title)
-        for line in lines:
-            self.append_log(f"  {line}")
-
-    def _plot_empty(self) -> None:
-        """
-        Clears the plot and shows an empty stereonet.
-        Safe to call any time (e.g., when no valid features/values exist).
-        """
+    def _plot_empty(self):
         try:
-            if self.ax:
-                self.fig.delaxes(self.ax)
-            self.ax = self.fig.add_subplot(111, projection="stereonet")
-            self.ax.grid(True)
-            self.ax.grid(kind="polar")
+            self.ax.clear()
+            self.ax.grid(True, zorder=0, alpha=0.5)
+            self.ax.grid(kind="polar", zorder=0, alpha=0.5)
             self.canvas.draw()
         except Exception:
-            # As a last resort, avoid crashing the plugin due to plotting issues
             pass
 
-    def append_log(self, message: str) -> None:
+    def append_log(self, message: str):
         self.log_output.appendPlainText(str(message))
 
-    def clear_log(self) -> None:
+    def clear_log(self):
         self.log_output.clear()
 
-    def _run_analysis(self):
-        layer = self._current_layer()
-        if layer is None:
-            QMessageBox.critical(self, "qAttitude", "No vector layer selected.")
+    def _load_data_and_plot(self):
+        layer = self.analysis_layer
+        if (
+            not layer
+            or not self.field1_combo.currentText()
+            or not self.field2_combo.currentText()
+        ):
+            self.plugin.data = pd.DataFrame()
+            self._update_plot()
             return
 
         is_planes = self.data_combo.currentIndex() == 0
         field1 = self.field1_combo.currentText()
         field2 = self.field2_combo.currentText()
-        show_individual = self.chk_individual.isChecked()
-        show_contours = self.chk_contours.isChecked()
-        plane_mode = self.plane_mode_combo.currentIndex()  # 0 poles,1 gcs,2 both
-        plot_poles = (not is_planes) or (plane_mode in (0, 2))
-        plot_gcs = is_planes and (plane_mode in (1, 2))
 
         try:
-            # start logging
-            self.append_log("=" * 60)
-            self.append_log("Starting analysis")
-            self.append_log(f"Layer: {layer.name()}")
-            self.append_log(
-                f"Mode: {'Planes (dip/dipdir)' if is_planes else 'Lines (plunge/trend)'}"
-            )
-            self.append_log(f"Fields: {field1}, {field2}")
-            self.append_log(
-                f"Plot options: individual={show_individual}, contours={show_contours}, "
-                f"plot_poles={plot_poles}, plot_great_circles={plot_gcs}"
-            )
-
-            # load data from layer
-            data_both = read_orientations_from_layer_selection(
+            self.plugin.data = read_orientations_from_layer_selection(
                 layer, is_planes, field1, field2, log=self.append_log
             )
+        except Exception as e:
+            self.plugin.data = pd.DataFrame()
+            tb = traceback.format_exc()
+            self.append_log(f"ERROR: {type(e).__name__}: {e}")
+            QMessageBox.critical(
+                self, "qAttitude", f"Error: {type(e).__name__}: {e}\n\n{tb}"
+            )
 
-            # check data
-            n = data_both.shape[0]
-            self.append_log(f"Valid orientations loaded: {n}")
-            if n == 0:
-                QMessageBox.warning(
-                    self,
-                    "qAttitude",
-                    "No valid orientation values in the layer/selection.",
-                )
-                self._plot_empty()
-                return
+        self._update_plot()
 
-            # clear plot
-            if self.ax:
-                self.fig.delaxes(self.ax)
-            self.ax = self.fig.add_subplot(111, projection="stereonet")
-            self.ax.grid(True)
-            self.ax.grid(kind="polar")
+    def _update_plot(self):
+        if self.plugin.data.empty:
+            self._plot_empty()
+            return
 
-            # base plot
-            query = "lower_hemi == True"
+        is_planes = self.data_combo.currentIndex() == 0
+        show_individual = self.chk_individual.isChecked()
+        show_contours = self.chk_contours.isChecked()
+        plane_mode = self.plane_mode_combo.currentIndex()
+        plot_poles = not is_planes or plane_mode in (0, 2)
+        plot_gcs = is_planes and plane_mode in (1, 2)
 
-            # base plot - poles
-            if show_individual and plot_poles:
-                self.ax.line(
-                    data_both.query(query)['plunge'].to_list(),
-                    data_both.query(query)['trend'].to_list(),
-                    "k.",
-                    markersize=4, alpha=0.85
-                )
-                self.append_log(f"{n} poles plotted.")
+        try:
+            self._last_projected = stereo_gis_plot.plot_base_stereonet(
+                self.ax,
+                self.plugin.data,
+                plot_poles=show_individual and plot_poles,
+                plot_gcs=show_individual and plot_gcs,
+                show_contours=show_contours,
+                contour_levels=self.contour_levels.value(),
+                point_color=self.point_color_combo.currentText(),
+                contour_cmap=self.contour_cmap_combo.currentText(),
+            )
 
-            # base plot - great circles
-            if show_individual and plot_gcs:
-                self.ax.plane(
-                    data_both.query(query)["strike"].to_list(),
-                    data_both.query(query)["dip"].to_list(),
-                    color="0.4",
-                    linewidth=1,
-                    alpha=1,
-                )
-                self.append_log(f"{n} great circles plotted.")
+            if self.chk_plot_clusters.isChecked():
+                self._plot_clusters()
+            if self.chk_vmf.isChecked():
+                self._plot_vmf()
+            if self.chk_bingham.isChecked():
+                self._plot_bingham()
 
-            # # overlay: k-medoids
-            # if self.chk_plot_clusters.isChecked():
-            #     self.append_log("Running k-medoids...")
-            #     cluster_summary = []
-            #     k = int(self.k_spin.value())
-            #     self.append_log(f"Running k-medoids with k={k}.")
-            #
-            #     if k > n:
-            #         QMessageBox.warning(
-            #             self,
-            #             "qAttitude",
-            #             f"k={k} cannot exceed number of observations n={n}.",
-            #         )
-            #         self.append_log(f"Invalid k: {k} > {n}.")
-            #         return
-            #
-            #     if self.init_pick.isChecked():
-            #         if len(self._picked_medoid_indices) != k:
-            #             QMessageBox.warning(
-            #                 self,
-            #                 "qAttitude",
-            #                 f"Pick exactly k={k} medoids on plot (picked {len(self._picked_medoid_indices)}).",
-            #             )
-            #             self.append_log(
-            #                 f"Invalid picked medoids count: expected {k}, got {len(self._picked_medoid_indices)}."
-            #             )
-            #             return
-            #         init_medoids = np.array(self._picked_medoid_indices, dtype=int)
-            #         self.append_log(
-            #             f"Using manually picked medoids: {init_medoids.tolist()}"
-            #         )
-            #     else:
-            #         rng = np.random.default_rng(int(self.seed_spin.value()))
-            #         init_medoids = rng.choice(n, size=k, replace=False)
-            #         self.append_log(
-            #             f"Using automatic initial medoids: {init_medoids.tolist()}"
-            #         )
-            #
-            #     data_both, medoids = kmedoids_axial(
-            #         data_both,
-            #         k=k,
-            #         maxiter=100,
-            #         init_medoids=init_medoids,
-            #         log=self.append_log,
-            #     )
-            #
-            #     cmap = plt.get_cmap("tab10")
-            #     for cluster in medoids['cluster'].to_list():
-            #         query = "lower_hemi == True and cluster == " + str(cluster)
-            #         color = cmap(cluster % 10)
-            #
-            #         if plot_poles:
-            #             self.ax.line(
-            #                 data_both.query(query)['plunge'].to_list(),
-            #                 data_both.query(query)['trend'].to_list(),
-            #                 ".",
-            #                 color=color,
-            #                 markersize=6,
-            #                 alpha=0.9,
-            #             )
-            #             self.append_log(f"plunge, trend for cluster {cluster}: {medoids.query(query)['plunge'].to_list()} , {medoids.query(query)['trend'].to_list()}")
-            #             self.ax.line(
-            #                 medoids.query(query)['plunge'].to_list(),
-            #                 medoids.query(query)['trend'].to_list(),
-            #                 marker="*",
-            #                 color=color,
-            #                 markersize=14,
-            #                 markeredgecolor="k",
-            #             )
-            #
-            #         if plot_gcs:
-            #             self.ax.plane(
-            #                 data_both.query(query)['strike'].to_list(),
-            #                 data_both.query(query)['dip'].to_list(),
-            #                 color=color,
-            #                 linewidth=1.0,
-            #                 alpha=0.45,
-            #             )
-            #             self.ax.plane(
-            #                 data_both.query(query)['strike'].to_list(),
-            #                 data_both.query(query)['dip'].to_list(),
-            #                 color=color,
-            #                 linewidth=4.0,
-            #                 alpha=1,
-            #             )
-            #
-            #     self.append_log("k-medoids clustering completed.")
-
-                # overlay: k-means
-                if self.chk_plot_clusters.isChecked():
-                    self.append_log("Running k-means...")
-                    cluster_summary = []
-                    k = int(self.k_spin.value())
-                    self.append_log(f"Running k-means with k={k}.")
-
-                    if k > n:
-                        QMessageBox.warning(
-                            self,
-                            "qAttitude",
-                            f"k={k} cannot exceed number of observations n={n}.",
-                        )
-                        self.append_log(f"Invalid k: {k} > {n}.")
-                        return
-
-                    if self.init_pick.isChecked():
-                        if len(self._picked_medoid_indices) != k:
-                            QMessageBox.warning(
-                                self,
-                                "qAttitude",
-                                f"Pick exactly k={k} means on plot (picked {len(self._picked_medoid_indices)}).",
-                            )
-                            self.append_log(
-                                f"Invalid picked means count: expected {k}, got {len(self._picked_medoid_indices)}."
-                            )
-                            return
-                        init_means = np.array(self._picked_medoid_indices, dtype=int)
-                        self.append_log(
-                            f"Using manually picked means: {init_means.tolist()}"
-                        )
-                    else:
-                        rng = np.random.default_rng(int(self.seed_spin.value()))
-                        init_means = rng.choice(n, size=k, replace=False)
-                        self.append_log(
-                            f"Using automatic initial means: {init_means.tolist()}"
-                        )
-
-                    data_both, means = kmeans(
-                        data_both,
-                        nn_clusters = k,
-                        init='k-means++',  #init_medoids=init_medoids,
-                        random_state = None,
-                        log=self.append_log,
-                    )
-
-                    cmap = plt.get_cmap("tab10")
-                    for cluster in means['cluster'].to_list():
-                        query = "lower_hemi == True and cluster == " + str(cluster)
-                        color = cmap(cluster % 10)
-
-                        if plot_poles:
-                            self.ax.line(
-                                data_both.query(query)['plunge'].to_list(),
-                                data_both.query(query)['trend'].to_list(),
-                                ".",
-                                color=color,
-                                markersize=6,
-                                alpha=0.9,
-                            )
-                            self.append_log(
-                                f"plunge, trend for cluster {cluster}: {means.query(query)['plunge'].to_list()} , {means.query(query)['trend'].to_list()}")
-                            self.ax.line(
-                                means.query(query)['plunge'].to_list(),
-                                means.query(query)['trend'].to_list(),
-                                marker="*",
-                                color=color,
-                                markersize=14,
-                                markeredgecolor="k",
-                            )
-
-                        if plot_gcs:
-                            self.ax.plane(
-                                data_both.query(query)['strike'].to_list(),
-                                data_both.query(query)['dip'].to_list(),
-                                color=color,
-                                linewidth=1.0,
-                                alpha=0.45,
-                            )
-                            self.ax.plane(
-                                data_both.query(query)['strike'].to_list(),
-                                data_both.query(query)['dip'].to_list(),
-                                color=color,
-                                linewidth=4.0,
-                                alpha=1,
-                            )
-
-                    self.append_log("k-means clustering completed.")
-
-            # self.ax.set_title(f"{'Planes' if is_planes else 'Lines'} (n={n})")
             self.canvas.draw()
             self.append_log("Plot updated.")
-
-            # cache projected XY for picking
-            try:
-                query = "lower_hemi == True"
-                x, y = stereonet_math.line(data_both.query(query)['plunge'].to_list(), data_both.query(query)['trend'].to_list())
-                self._last_projected = np.column_stack([x, y]).astype(float)
-                self.append_log("Projected plot coordinates cached for medoid picking.")
-            except Exception:
-                self._last_projected = None
-                self.append_log("Could not cache projected plot coordinates.")
-
-            # base plot - contours
-            if show_contours:
-                self.ax.density_contourf(
-                    data_both.query(query)['plunge'],
-                    data_both.query(query)['trend'],
-                    measurement="lines",
-                    cmap="Greys",
-                    alpha=0.6,
-                    levels=int(self.contour_levels.value()),
-                )
-                self.append_log(
-                    f"Contours plotted with {int(self.contour_levels.value())} levels."
-                )
-
-            # overlay: Von Mises-Fisher
-            if self.chk_vmf.isChecked():
-                self.append_log("Computing Von Mises-Fisher mean...")
-                vmf = vmf_mean_axial(data_both, log=self.append_log)
-                m = vmf["mean_xyz"]
-                if np.isfinite(m).all():
-                    tr, pl = lmn_to_trend_plunge(m)
-                    self.ax.line(pl, tr, "r*", markersize=12)
-                    self.append_log(
-                        f"VMF mean plotted at trend={tr:.2f}, plunge={pl:.2f} in red."
-                    )
-
-            # overlay: Von Mises-Fisher
-            if self.chk_kent.isChecked():
-                pass
-
-            # overlay: Bingham
-            if self.chk_bingham.isChecked():
-                self.append_log("Computing Bingham principal axes...")
-                b = bingham_principal_axes_axial(data_both, log=self.append_log)
-                beta = b["beta_axis_xyz"]
-                tr, pl = lmn_to_trend_plunge(beta)
-                self.ax.line(pl, tr, "D", color="#1f77b4", markersize=7)
-
-                dipdir = wrap360(tr + 180)
-                dip = 90.0 - pl
-                strike = dipdir2strike(dipdir)
-                self.ax.plane(strike, dip, color="#1f77b4", linewidth=1.4, alpha=0.85)
-                self.append_log(
-                    f"Bingham beta axis plotted at trend={tr:.2f}, plunge={pl:.2f}."
-                )
-
-            # save only on request
-            if self.chk_save.isChecked():
-                out_dir = self.out_dir.text().strip()
-                if not out_dir or not os.path.isdir(out_dir):
-                    QMessageBox.warning(
-                        self,
-                        "qAttitude",
-                        "Save enabled, but output directory is invalid.",
-                    )
-                    self.append_log("Save requested, but output directory is invalid.")
-                    return
-
-                out_path = os.path.join(out_dir, "stereonet.png")
-                self.fig.savefig(
-                    out_path,
-                    dpi=200,
-                    bbox_inches="tight",
-                )
-                self.append_log(f"Figure saved to: {out_path}")
-
-                log_path = os.path.join(out_dir, "stereonet_log.txt")
-                with open(log_path, "w", encoding="utf-8") as f:
-                    f.write(self.log_output.toPlainText())
-                    if not self.log_output.toPlainText().endswith("\n"):
-                        f.write("\n")
-                self.append_log(f"Log saved to: {log_path}")
-
-            self.append_log("Analysis completed successfully.")
-
         except Exception as e:
             tb = traceback.format_exc()
             self.append_log(f"ERROR: {type(e).__name__}: {e}")
             QMessageBox.critical(
                 self, "qAttitude", f"Error: {type(e).__name__}: {e}\n\n{tb}"
             )
+
+    def _plot_clusters(self):
+        k = int(self.k_spin.value())
+        n = self.plugin.data.shape[0]
+        if k > n:
+            self.append_log(f"Invalid k: {k} > {n}.")
+            return
+
+        data_with_clusters, means = kmeans(
+            self.plugin.data.copy(),
+            nn_clusters=k,
+            init="k-means++",
+            random_state=self.seed_spin.value(),
+            log=self.append_log,
+        )
+
+        is_planes = self.data_combo.currentIndex() == 0
+        plane_mode = self.plane_mode_combo.currentIndex()
+        plot_poles = not is_planes or plane_mode in (0, 2)
+        plot_gcs = is_planes and plane_mode in (1, 2)
+
+        stereo_gis_plot.plot_clusters(
+            self.ax, data_with_clusters, means, plot_poles, plot_gcs
+        )
+        self.append_log("k-means clustering completed.")
+
+    def _plot_vmf(self):
+        vmf = vmf_mean_axial(self.plugin.data, log=self.append_log)
+        m = vmf["mean_xyz"]
+        if np.isfinite(m).all():
+            tr, pl = stereo_gis_plot.plot_vmf(self.ax, m)
+            self.append_log(
+                f"VMF mean plotted at trend={tr:.2f}, plunge={pl:.2f} in red."
+            )
+
+    def _plot_bingham(self):
+        b = bingham_principal_axes_axial(self.plugin.data, log=self.append_log)
+        beta = b["beta_axis_xyz"]
+        tr, pl = stereo_gis_plot.plot_bingham(self.ax, beta)
+        self.append_log(
+            f"Bingham beta axis plotted at trend={tr:.2f}, plunge={pl:.2f}."
+        )

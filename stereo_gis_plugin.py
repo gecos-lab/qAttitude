@@ -2,6 +2,7 @@
 # qAttitude @ Andrea Bistacchi 2024-06-26
 
 import os
+import pandas as pd
 from qgis.PyQt.QtWidgets import QAction
 from qgis.PyQt.QtGui import QIcon
 
@@ -13,6 +14,7 @@ class StereoGisPlugin:
         self.iface = iface
         self.action = None
         self.dlg = None
+        self.data = pd.DataFrame()
 
     def initGui(self):
         icon_path = os.path.join(os.path.dirname(__file__), "icon.svg")
@@ -29,7 +31,7 @@ class StereoGisPlugin:
 
     def run(self):
         if self.dlg is None:
-            self.dlg = StereoGisDialog(self.iface)
+            self.dlg = StereoGisDialog(self.iface, self)
         self.dlg.show()
         self.dlg.raise_()
         self.dlg.activateWindow()

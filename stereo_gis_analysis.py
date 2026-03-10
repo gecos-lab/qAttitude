@@ -37,7 +37,7 @@ def trend_plunge_to_lmn(trend, plunge):
 
 def lmn_to_trend_plunge(l, m, n):
     plunge_rad = np.arcsin(-n)
-    trend_rad = np.arctan2(l, m)
+    trend_rad = np.arctan2(m, l)  # Corrected arctan2 order
     plunge = wrap360(rad2deg(plunge_rad))
     trend = wrap360(rad2deg(trend_rad))
     return trend, plunge
@@ -70,7 +70,7 @@ def vmf_mean_axial(vector_xyz: np.ndarray, log=None) -> dict:
 
     _log(log, f"VMF: input vectors shape = {vector_xyz.shape}")
 
-    V = np.array([mirror_to_other_hemisphere(v) for v in vector_xyz], dtype=float)
+    V = vector_xyz[["l", "m", "n"]].values
     S = V.sum(axis=0)
     S_norm = float(np.linalg.norm(S))
     if S_norm == 0.0:
@@ -99,7 +99,7 @@ def bingham_principal_axes_axial(vector_xyz: np.ndarray, log=None) -> dict:
 
     _log(log, f"Bingham: input vectors shape = {vector_xyz.shape}")
 
-    V = np.array([mirror_to_other_hemisphere(v) for v in vector_xyz], dtype=float)
+    V = vector_xyz[["l", "m", "n"]].values
     V = V / np.linalg.norm(V, axis=1, keepdims=True)
 
     T = (V.T @ V) / V.shape[0]
@@ -110,7 +110,6 @@ def bingham_principal_axes_axial(vector_xyz: np.ndarray, log=None) -> dict:
 
     beta = evecs[:, 0]
     beta = beta / np.linalg.norm(beta)
-    beta = mirror_to_other_hemisphere(beta)
 
     _log(log, f"Bingham: eigenvalues = {np.array2string(evals, precision=6)}")
 
@@ -124,7 +123,7 @@ def axial_angular_distance(u: np.ndarray, v: np.ndarray) -> float:
 
 
 def kmedoids_axial(
-    data_both,
+    data,
     k: int,
     maxiter: int = 100,
     init_medoids: np.ndarray | None = None,
@@ -163,51 +162,56 @@ def kmedoids_axial(
         inertia – Sum of distances of samples to their closest cluster center
     """
     # initialize
-    n = data_both.shape[0]
+    n = data.shape[0]
     if n == 0:
         raise QgsProcessingException("No vectors to cluster.")
     if not (1 <= k <= n):
         raise QgsProcessingException(f"k must be in [1, {n}]")
     _log(log, f"k-medoids: n={n}, k={k}, maxiter={maxiter}")
-    init = 'random'  # Supported inits are 'random', 'first' and 'build'.
+    init = "random"  # Supported inits are 'random', 'first' and 'build'.
 
     # run clustering
-    vectors = data_both[['l', 'm', 'n']].values
-    kmedoids = KMedoids(n_clusters=k*2, init=init, metric=axial_angular_distance).fit(vectors)
+    vectors = data[["l", "m", "n"]].values
+    kmedoids = KMedoids(n_clusters=k * 2, init=init, metric=axial_angular_distance).fit(
+        vectors
+    )
 
     # write results in dataframe
-    data_both['cluster'] = kmedoids.labels_
+    data["cluster"] = kmedoids.labels_
 
     # show results
     _log(log, f"medoids indices: {kmedoids.medoid_indices_}")
     _log(log, f"medoids: {kmedoids.cluster_centers_}")
-    _log(log, f"data_both['cluster'].unique(): {data_both['cluster'].unique()}")
+    _log(log, f"data['cluster'].unique(): {data['cluster'].unique()}")
 
-    medoids = pd.DataFrame(kmedoids.cluster_centers_, columns=['l', 'm', 'n'])
-    medoids['data_index'] = kmedoids.medoid_indices_
+    medoids = pd.DataFrame(kmedoids.cluster_centers_, columns=["l", "m", "n"])
+    medoids["data_index"] = kmedoids.medoid_indices_
     # Uses .iloc[row_positions, column_positions] to select by position
     # medoids['data_index'] contains the row positions (0, 1, 2, ...)
-    # data_both.columns.get_indexer([...]) gets the column positions
+    # data.columns.get_indexer([...]) gets the column positions
     # .values converts to numpy array and assigns to medoids
-    medoids[['plunge', 'trend', 'lower_hemi', 'cluster']] = data_both.iloc[medoids['data_index'], data_both.columns.get_indexer(['plunge', 'trend', 'lower_hemi', 'cluster'])].values
+    medoids[["plunge", "trend", "lower_hemi", "cluster"]] = data.iloc[
+        medoids["data_index"],
+        data.columns.get_indexer(["plunge", "trend", "lower_hemi", "cluster"]),
+    ].values
 
     _log(log, f"all medoids: {medoids.to_string()}")
 
     # keep clusters with medoid pointing downwards only
-    medoids = medoids.loc[medoids['lower_hemi'] == True].reset_index(drop=True)
+    medoids = medoids.loc[medoids["lower_hemi"] == True].reset_index(drop=True)
     _log(log, f"n kept medoids - downwards only: {medoids.shape[0]}")
     _log(log, f"kept medoids - lower hemisphere: {medoids.to_string()}")
 
-    return data_both, medoids
+    return data, medoids
 
 
 def kmeans(
-        data_both,
-        nn_clusters = 1,
-        init = 'k-means++',
-        max_iter = 100,
-        random_state = None,
-        log=None,
+    data,
+    nn_clusters=1,
+    init="k-means++",
+    max_iter=100,
+    random_state=None,
+    log=None,
 ):
     """
     Calculate k-medoids clustering for axial orientation analysis, using the scikit-learn library.
@@ -235,51 +239,59 @@ def kmeans(
         inertia – Sum of distances of samples to their closest cluster center
     """
     # initialize
-    n = data_both.shape[0]
+    n = data.shape[0]
     if n == 0:
         raise QgsProcessingException("No vectors to cluster.")
-    if not (1 <= k <= n):
+    if not (1 <= nn_clusters <= n):
         raise QgsProcessingException(f"k must be in [1, {n}]")
-    _log(log, f"k-medoids: n={n}, k={k}, maxiter={maxiter}")
+    _log(log, f"k-means: n={n}, k={nn_clusters}, maxiter={max_iter}")
 
     # run clustering
-    vectors = data_both[['l', 'm', 'n']].values
-    kmeans = KMeans(nn_clusters=nn_clusters*2,
-                    init=init,
-                    n_init='auto',
-                    max_iter=max_iter,
-                    tol=0.0001,
-                    verbose=0,
-                    random_state=random_state,
-                    copy_x=True,
-                    algorithm='lloyd').fit(vectors)
+    vectors = data[["l", "m", "n"]].values
+    kmeans = KMeans(
+        n_clusters=nn_clusters * 2,
+        init=init,
+        n_init="auto",
+        max_iter=max_iter,
+        tol=0.0001,
+        verbose=0,
+        random_state=random_state,
+        copy_x=True,
+        algorithm="lloyd",
+    ).fit(vectors)
 
     # write results in dataframe
-    data_both['cluster'] = kmeans.labels_
+    data["cluster"] = kmeans.labels_
 
     # show results
-    _log(log, f"medoids: {kmeans.cluster_centers_}")
-    _log(log, f"data_both['cluster'].unique(): {data_both['cluster'].unique()}")
+    _log(log, f"means: {kmeans.cluster_centers_}")
+    _log(log, f"data['cluster'].unique(): {data['cluster'].unique()}")
 
-    means = pd.DataFrame(kmeans.cluster_centers_, columns=['l', 'm', 'n'])
-    means['cluster'] = np.arange(means.shape[0])
-    means['plunge'] = lmn_to_trend_plunge(means['l'], means['m'], means['n'])[1]
-    means['trend'] = lmn_to_trend_plunge(means['l'], means['m'], means['n'])[0]
-    means['lower_hemi'] = means['n'] <= 0
+    means = pd.DataFrame(kmeans.cluster_centers_, columns=["l", "m", "n"])
+    means["cluster"] = np.arange(means.shape[0])
+    means["trend"], means["plunge"] = lmn_to_trend_plunge(
+        means["l"], means["m"], means["n"]
+    )
+    means["lower_hemi"] = means["n"] <= 0
+    
+    # Add strike and dip for plotting great circles
+    means['dip'] = 90.0 - means['plunge']
+    dipdir = wrap360(means['trend'] - 180)
+    means['strike'] = dipdir2strike(dipdir)
 
     _log(log, f"all means: {means.to_string()}")
 
     # keep clusters with medoid pointing downwards only
-    means = means.loc[means['lower_hemi'] == True].reset_index(drop=True)
+    means = means.loc[means["lower_hemi"] == True].reset_index(drop=True)
     _log(log, f"n kept means - downwards only: {means.shape[0]}")
     _log(log, f"kept means - lower hemisphere: {means.to_string()}")
 
-    return data_both, means
+    return data, means
 
 
 def read_orientations_from_layer_selection(
     layer, is_planes: bool, field1: str, field2: str, log=None
-) -> dict:
+) -> pd.DataFrame:
     """
     Reads orientations from the layer.
     Uses selected features if any are selected; otherwise uses all features.
@@ -313,15 +325,26 @@ def read_orientations_from_layer_selection(
         try:
             v1 = float(v1)
             v2 = float(v2)
-        except Exception:
+        except (ValueError, TypeError):
             invalid_count += 1
             continue
-        if not (0.0 <= v1 <= 90.0):
-            invalid_count += 1
-            continue
-        if not (0.0 <= v2 <= 360.0):
-            invalid_count += 1
-            continue
+
+        # Validate dip/plunge and dipdir/trend values
+        if is_planes:  # Planes: dip, dipdir
+            if not (0.0 <= v1 <= 90.0):
+                invalid_count += 1
+                continue
+            if not (0.0 <= v2 <= 360.0):
+                invalid_count += 1
+                continue
+        else:  # Lines: plunge, trend
+            if not (0.0 <= v1 <= 90.0):
+                invalid_count += 1
+                continue
+            if not (0.0 <= v2 <= 360.0):
+                invalid_count += 1
+                continue
+
         in_list_1.append(v1)
         in_list_2.append(v2)
     in_list_1 = np.array(in_list_1)
@@ -330,42 +353,39 @@ def read_orientations_from_layer_selection(
     # now populate the dataframe according to plane vs. line
     data_lower = pd.DataFrame({})
     if is_planes:
-        data_lower['dip'] = in_list_1
-        data_lower['dipdir'] = in_list_2
-        data_lower['strike'] = dipdir2strike(in_list_2)
-        data_lower['plunge'] = 90.0 - in_list_1
-        data_lower['trend'] = wrap360(in_list_2 + 180)
+        data_lower["dip"] = in_list_1
+        data_lower["dipdir"] = in_list_2
+        data_lower["strike"] = dipdir2strike(in_list_2)
+        data_lower["plunge"] = 90.0 - in_list_1
+        data_lower["trend"] = wrap360(in_list_2 + 180)
         l, m, n = dipdir_dip_to_pole_lmn(in_list_2, in_list_1)
-        data_lower['l'] = l
-        data_lower['m'] = m
-        data_lower['n'] = n
-        data_lower['cluster'] = None
-        data_lower['lower_hemi'] = True
     else:
-        data_lower['plunge'] = in_list_1
-        data_lower['trend'] = in_list_2
+        data_lower["plunge"] = in_list_1
+        data_lower["trend"] = in_list_2
         l, m, n = trend_plunge_to_lmn(in_list_2, in_list_1)
-        data_lower['l'] = l
-        data_lower['m'] = m
-        data_lower['n'] = n
-        data_lower['cluster'] = None
-        data_lower['lower_hemi'] = True
+
+    data_lower["l"] = l
+    data_lower["m"] = m
+    data_lower["n"] = n
+    data_lower["cluster"] = None
+    data_lower["lower_hemi"] = True
 
     # now duplicate the data to perform axially symmetric orientation analysis
     data_upper = data_lower.copy()
-    data_upper['l'] = -data_upper['l']
-    data_upper['m'] = -data_upper['m']
-    data_upper['n'] = -data_upper['n']
-    data_upper['lower_hemi'] = False
+    data_upper["l"] = -data_upper["l"]
+    data_upper["m"] = -data_upper["m"]
+    data_upper["n"] = -data_upper["n"]
+    data_upper["lower_hemi"] = False
 
-    data_both = pd.concat([data_lower, data_upper]).reset_index(drop=True)
+    data = pd.concat([data_lower, data_upper]).reset_index(drop=True)
 
     _log(
         log,
         f"Orientation reading complete: valid={data_lower.shape[0]}, invalid/skipped={invalid_count}.",
     )
-    _log(
-        log,
-        data_both.iloc[0:10].to_string(),
-    )
-    return data_both
+    if not data.empty:
+        _log(
+            log,
+            data.iloc[0:10].to_string(),
+        )
+    return data
