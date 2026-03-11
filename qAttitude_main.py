@@ -33,7 +33,13 @@ from qgis.PyQt.QtWidgets import (
     QButtonGroup,
 )
 
-from qgis.core import QgsProject, QgsVectorLayer, QgsMimeDataUtils, QgsMapLayer, QgsProcessingException
+from qgis.core import (
+    QgsProject,
+    QgsVectorLayer,
+    QgsMimeDataUtils,
+    QgsMapLayer,
+    QgsProcessingException,
+)
 
 from qgis.PyQt.QtCore import pyqtSignal, Qt
 
@@ -47,6 +53,8 @@ from matplotlib.figure import Figure
 import mplstereonet
 from mplstereonet import stereonet_math
 
+
+# ================= useful functions =================
 
 def _log(log, message: str) -> None:
     if log is not None:
@@ -208,7 +216,10 @@ def read_orientations_from_layer_selection(
     return data
 
 
+# ================= useful classes =================
+
 class LayerDropGroupBox(QGroupBox):
+    """Class used to manage drag and drop of layer into dialog."""
     layerDropped = pyqtSignal(QgsMapLayer)
 
     def __init__(self, title: str = "", parent=None):
@@ -251,7 +262,10 @@ class LayerDropGroupBox(QGroupBox):
         event.ignore()
 
 
+# ================= main class =================
+
 class qAttitudeDialog(QDialog):
+    """Main class creating the dialog and managing analysis and plotting with various methods."""
     def __init__(self, iface, plugin):
         super().__init__(iface.mainWindow())
         self.iface = iface
@@ -267,10 +281,42 @@ class qAttitudeDialog(QDialog):
         self._picking_enabled = False
         self._last_projected = None
 
+        # data dataframe storing all data dynamically selected in the layer
+        data_columns = [
+            "dip",
+            "dipdir",
+            "strike",
+            "plunge",
+            "trend",
+            "l",
+            "m",
+            "n",
+            "cluster",
+            "lower_hemi",
+        ]
+        self.data = pd.DataFrame(columns=data_columns)
+
+        # means dataframe storing mean orientations and other parameters for each cluster created on the fly
+        means_columns = [
+            "l",
+            "m",
+            "n",
+            "cluster",
+            "trend",
+            "plunge",
+            "lower_hemi",
+            "dip",
+            "strike",
+        ]
+        self.means = pd.DataFrame(columns=means_columns)
+
         self._init_ui()
         self._plot_empty()
 
+    # ================= GUI methods =================
+
     def showEvent(self, event):
+        """Reimplements showEvent() that runs when opening the plugin."""
         super().showEvent(event)
         # On first show, if no layer is set, try to use the active one
         if self.analysis_layer is None:
@@ -282,9 +328,10 @@ class qAttitudeDialog(QDialog):
         self._select_layer_in_combo(self.analysis_layer)
         self._refresh_fields()
         self._refresh_field_controls()
-        self._load_data_and_plot()
+        self._load_data_calc_and_plot()
 
     def _init_ui(self):
+        """Creates all GUI objects."""
         main = QHBoxLayout(self)
 
         left = QVBoxLayout()
@@ -334,10 +381,10 @@ class qAttitudeDialog(QDialog):
         self.layer_combo.currentIndexChanged.connect(self.on_layer_combo_changed)
         self.data_planes.toggled.connect(self.on_data_type_changed)
         self.data_lines.toggled.connect(self.on_data_type_changed)
-        self.field1_combo.currentIndexChanged.connect(self._load_data_and_plot)
-        self.field2_combo.currentIndexChanged.connect(self._load_data_and_plot)
-        self.analysis_axial.toggled.connect(self._load_data_and_plot)
-        self.analysis_polar.toggled.connect(self._load_data_and_plot)
+        self.field1_combo.currentIndexChanged.connect(self._load_data_calc_and_plot)
+        self.field2_combo.currentIndexChanged.connect(self._load_data_calc_and_plot)
+        self.analysis_axial.toggled.connect(self._load_data_calc_and_plot)
+        self.analysis_polar.toggled.connect(self._load_data_calc_and_plot)
 
         # K-means
         g_km = QGroupBox("K-means clustering")
@@ -453,13 +500,15 @@ class qAttitudeDialog(QDialog):
         self.contour_cmap_combo.addItems(cmaps)
         gridp.addWidget(self.contour_cmap_combo, 7, 1)
 
+        self.k_spin.valueChanged.connect(self._calc_clusters_and_plot)
+
         self.chk_individual.stateChanged.connect(self._update_plot)
         self.plane_mode_combo.currentIndexChanged.connect(self._update_plot)
         self.chk_contours.stateChanged.connect(self._update_plot)
         self.contour_levels.valueChanged.connect(self._update_plot)
         self.chk_plot_clusters.stateChanged.connect(self._update_plot)
-        self.k_spin.valueChanged.connect(self._update_plot)
         self.chk_vmf.stateChanged.connect(self._update_plot)
+        self.chk_kent.stateChanged.connect(self._update_plot)
         self.chk_bingham.stateChanged.connect(self._update_plot)
         self.point_color_combo.currentIndexChanged.connect(self._update_plot)
         self.contour_cmap_combo.currentIndexChanged.connect(self._update_plot)
@@ -482,7 +531,7 @@ class qAttitudeDialog(QDialog):
 
         left.addStretch(1)
 
-        # Plot
+        # Plot canvas
         self.fig = Figure(figsize=(6, 6), dpi=120)
         self.canvas = FigureCanvas(self.fig)
         self.canvas.setMinimumHeight(500)
@@ -493,6 +542,7 @@ class qAttitudeDialog(QDialog):
         self.ax.grid(kind="polar")
         self.canvas.mpl_connect("button_press_event", self._on_plot_click)
 
+        # Log window
         g_log = QGroupBox("Log")
         right.addWidget(g_log, 2)
         gridlog = QGridLayout(g_log)
@@ -508,27 +558,31 @@ class qAttitudeDialog(QDialog):
         gridlog.addWidget(self.btn_clear_log, 1, 1)
 
     def on_layer_dropped(self, layer):
+        """Runs when a layer is dropped on the plugin window."""
         self.set_analysis_layer(layer)
         self._populate_layers()
         self._select_layer_in_combo(layer)
         self._refresh_fields()
         self._refresh_field_controls()
-        self._load_data_and_plot()
+        self._load_data_calc_and_plot()
 
     def on_layer_combo_changed(self):
+        """Runs when the layer combo value is changed."""
         layer = self._current_layer_from_combo()
         self.set_analysis_layer(layer)
         self._refresh_fields()
         self._refresh_field_controls()
-        self._load_data_and_plot()
+        self._load_data_calc_and_plot()
 
     def on_data_type_changed(self, checked):
+        """Runs when the data type buttons value is changed."""
         if not checked:
             return
         self._refresh_field_controls()
-        self._load_data_and_plot()
+        self._load_data_calc_and_plot()
 
     def _populate_layers(self):
+        """Used to clear the layer combo from previous list and populate it with a new one."""
         self.layer_combo.blockSignals(True)
         self.layer_combo.clear()
         self._layer_ids_by_index = []
@@ -542,6 +596,7 @@ class qAttitudeDialog(QDialog):
         self.layer_combo.blockSignals(False)
 
     def _select_layer_in_combo(self, layer: QgsMapLayer) -> None:
+        """Used to select the layer while blocking signals so other parte of the GUI are not messed up."""
         if layer is None:
             return
         try:
@@ -553,22 +608,23 @@ class qAttitudeDialog(QDialog):
             pass
 
     def set_analysis_layer(self, layer: QgsMapLayer):
+        """Used to set the layer to be analyzed at startup, when a layer is dropped, or after the
+        combo is changed. Signals are disconnected and then reconnected to avoid loops."""
         if self.analysis_layer:
             try:
-                self.analysis_layer.selectionChanged.disconnect(
-                    self._load_data_and_plot
-                )
+                self.analysis_layer.selectionChanged.disconnect(self._load_data_calc_and_plot)
             except TypeError:
                 pass
 
         if layer and layer.type() == QgsMapLayer.VectorLayer:
             self.analysis_layer = layer
-            self.analysis_layer.selectionChanged.connect(self._load_data_and_plot)
+            self.analysis_layer.selectionChanged.connect(self._load_data_calc_and_plot)
             self.append_log(f"Input layer set to: {layer.name()}")
         else:
             self.analysis_layer = None
 
     def _current_layer_from_combo(self) -> QgsMapLayer | None:
+        """Get the current layer from combo."""
         if self.layer_combo.currentIndex() >= 0:
             idx = self.layer_combo.currentIndex()
             if 0 <= idx < len(self._layer_ids_by_index):
@@ -577,6 +633,7 @@ class qAttitudeDialog(QDialog):
         return None
 
     def _refresh_fields(self):
+        """Used to refresh all fields at startup or when the layer is changed."""
         layer = self.analysis_layer
 
         self.field1_combo.blockSignals(True)
@@ -633,17 +690,20 @@ class qAttitudeDialog(QDialog):
         self.field2_combo.blockSignals(False)
 
     def _refresh_field_controls(self):
+        """Used to change controls depending on planes vs lines."""
         is_planes = self.data_planes.isChecked()
         self.field1_label.setText("Dip field:" if is_planes else "Plunge field:")
         self.field2_label.setText("DipDir field:" if is_planes else "Trend field:")
         self.plane_mode_combo.setEnabled(is_planes)
 
     def _browse_dir(self):
+        """Used to browse directory for saving."""
         d = QFileDialog.getExistingDirectory(self, "Select output directory", "")
         if d:
             self.out_dir.setText(d)
 
     def _toggle_picking(self):
+        """Used to toggle picking of kmedoids seeds."""
         if not self.init_pick.isChecked():
             QMessageBox.information(
                 self, "Pick medoid seeds", "Select 'Pick seeds on plot' first."
@@ -655,10 +715,12 @@ class qAttitudeDialog(QDialog):
         )
 
     def _clear_picks(self):
+        """Used to clear kmedoids seeds."""
         self._picked_medoid_indices = []
         self.lbl_picks.setText("Picked: 0")
 
     def _on_plot_click(self, event):
+        """Used for picking of kmedoids seeds."""
         if (
             not self._picking_enabled
             or event.inaxes != self.ax
@@ -683,22 +745,17 @@ class qAttitudeDialog(QDialog):
             self._picking_enabled = False
             self.btn_pick.setText("Pick medoid seeds")
 
-    def _plot_empty(self):
-        try:
-            self.ax.clear()
-            self.ax.grid(True, zorder=0, alpha=0.5)
-            self.ax.grid(kind="polar", zorder=0, alpha=0.5)
-            self.canvas.draw()
-        except Exception:
-            pass
-
     def append_log(self, message: str):
         self.log_output.appendPlainText(str(message))
 
     def clear_log(self):
         self.log_output.clear()
 
-    def _load_data_and_plot(self):
+    # ================= PROCESSING AND ANALYSIS methods =================
+
+    def _load_data_calc_and_plot(self):
+        """Main method to load data, calculate means, depending on the number of
+        clusters and axial/polar, and finally plot."""
         sender = self.sender()
         if isinstance(sender, QRadioButton) and not sender.isChecked():
             return
@@ -709,7 +766,8 @@ class qAttitudeDialog(QDialog):
             or not self.field1_combo.currentText()
             or not self.field2_combo.currentText()
         ):
-            self.plugin.data = self.plugin.data.iloc[0:0]
+            self.data = self.data.iloc[0:0]
+            self.means = self.means.iloc[0:0]
             self._update_plot()
             return
 
@@ -719,7 +777,7 @@ class qAttitudeDialog(QDialog):
         analysis_type = "axial" if self.analysis_axial.isChecked() else "polar"
 
         try:
-            self.plugin.data = read_orientations_from_layer_selection(
+            self.data = read_orientations_from_layer_selection(
                 layer,
                 field1,
                 field2,
@@ -728,96 +786,26 @@ class qAttitudeDialog(QDialog):
                 log=self.append_log,
             )
         except Exception as e:
-            self.plugin.data = self.plugin.data.iloc[0:0]
+            self.data = self.data.iloc[0:0]
+            self.means = self.means.iloc[0:0]
             tb = traceback.format_exc()
             self.append_log(f"ERROR: {type(e).__name__}: {e}")
             QMessageBox.critical(
                 self, "qAttitude", f"Error: {type(e).__name__}: {e}\n\n{tb}"
             )
 
-        self._update_plot()
+        # when data are properly loaded, run analysis and plot
+        self._calc_clusters_and_plot()
 
-    def _update_plot(self):
-        if self.plugin.data.empty:
-            self._plot_empty()
-            return
-
-        is_planes = self.data_planes.isChecked()
-        show_individual = self.chk_individual.isChecked()
-        show_contours = self.chk_contours.isChecked()
-        plane_mode = self.plane_mode_combo.currentIndex()
-        plot_poles = not is_planes or plane_mode in (0, 2)
-        plot_gcs = is_planes and plane_mode in (1, 2)
-
-        try:
-            self.ax.clear()
-            self.ax.grid(True, zorder=0, alpha=0.5)
-            self.ax.grid(kind="polar", zorder=0, alpha=0.5)
-
-            if not self.plugin.data.empty:
-                query = "lower_hemi == True"
-                if show_contours:
-                    self.ax.density_contourf(
-                        self.plugin.data.query(query)["plunge"],
-                        self.plugin.data.query(query)["trend"],
-                        measurement="lines",
-                        cmap=self.contour_cmap_combo.currentText(),
-                        alpha=0.6,
-                        levels=int(self.contour_levels.value()),
-                        zorder=1,
-                    )
-                if plot_gcs:
-                    self.ax.plane(
-                        self.plugin.data.query(query)["strike"].to_list(),
-                        self.plugin.data.query(query)["dip"].to_list(),
-                        color=self.point_color_combo.currentText(),
-                        linewidth=1,
-                        alpha=0.5,
-                        zorder=2,
-                    )
-                if plot_poles:
-                    self.ax.line(
-                        self.plugin.data.query(query)["plunge"].to_list(),
-                        self.plugin.data.query(query)["trend"].to_list(),
-                        ".",
-                        color=self.point_color_combo.currentText(),
-                        markersize=4,
-                        alpha=1,
-                        zorder=3,
-                    )
-                try:
-                    x, y = stereonet_math.line(
-                        self.plugin.data.query(query)["plunge"].to_list(),
-                        self.plugin.data.query(query)["trend"].to_list(),
-                    )
-                    self._last_projected = np.column_stack([x, y]).astype(float)
-                except Exception:
-                    self._last_projected = None
-
-            if self.chk_plot_clusters.isChecked():
-                self._plot_clusters()
-            if self.chk_vmf.isChecked():
-                self._plot_vmf()
-            if self.chk_bingham.isChecked():
-                self._plot_bingham()
-
-            self.canvas.draw()
-            self.append_log("Plot updated.")
-        except Exception as e:
-            tb = traceback.format_exc()
-            self.append_log(f"ERROR: {type(e).__name__}: {e}")
-            QMessageBox.critical(
-                self, "qAttitude", f"Error: {type(e).__name__}: {e}\n\n{tb}"
-            )
-
-    def _plot_clusters(self):
+    def _calc_clusters_and_plot(self):
+        """Used to calculate kmeans clusters when their number is changed ot seeds are redefined, and finally plot."""
         k = int(self.k_spin.value())
         analysis_type = "axial" if self.analysis_axial.isChecked() else "polar"
         n_clusters = k
         if analysis_type == "axial":
             n_clusters = k * 2
 
-        n = len(self.plugin.data)
+        n = len(self.data)
         if n == 0:
             self.append_log("No data to cluster.")
             return
@@ -833,7 +821,7 @@ class qAttitudeDialog(QDialog):
             self.k_spin.setValue(k)
             self.k_spin.blockSignals(False)
 
-        vectors = self.plugin.data[["l", "m", "n"]].values
+        vectors = self.data[["l", "m", "n"]].values
         kmeans_model = KMeans(
             n_clusters=n_clusters,
             init="k-means++",
@@ -846,72 +834,34 @@ class qAttitudeDialog(QDialog):
             algorithm="lloyd",
         ).fit(vectors)
 
-        self.plugin.data["cluster"] = kmeans_model.labels_
+        self.data["cluster"] = kmeans_model.labels_
 
-        means = pd.DataFrame(kmeans_model.cluster_centers_, columns=["l", "m", "n"])
-        means["cluster"] = np.arange(means.shape[0])
-        means["trend"], means["plunge"] = lmn_to_trend_plunge(
-            means["l"], means["m"], means["n"]
+        self.means = pd.DataFrame(
+            kmeans_model.cluster_centers_, columns=["l", "m", "n"]
         )
-        means["lower_hemi"] = means["n"] <= 0
-        means["dip"] = 90.0 - means["plunge"]
-        dipdir = wrap360(means["trend"] - 180)
-        means["strike"] = dipdir2strike(dipdir)
+        self.means["cluster"] = np.arange(self.means.shape[0])
+        self.means["trend"], self.means["plunge"] = lmn_to_trend_plunge(
+            self.means["l"], self.means["m"], self.means["n"]
+        )
+        self.means["lower_hemi"] = self.means["n"] <= 0
+        self.means["dip"] = 90.0 - self.means["plunge"]
+        dipdir = wrap360(self.means["trend"] - 180)
+        self.means["strike"] = dipdir2strike(dipdir)
 
         if analysis_type == "axial":
-            means = means.loc[means["lower_hemi"] == True].reset_index(drop=True)
+            self.means = self.means.loc[
+                self.means["lower_hemi"] == True
+            ].reset_index(drop=True)
 
-        is_planes = self.data_planes.isChecked()
-        plane_mode = self.plane_mode_combo.currentIndex()
-        plot_poles = not is_planes or plane_mode in (0, 2)
-        plot_gcs = is_planes and plane_mode in (1, 2)
+        # when clustering has been run, calculate means and then plot
+        self._calc_vmf()
+        self._calc_kent()
+        self._calc_bingham()
+        self._update_plot()
 
-        cmap = plt.get_cmap("tab10")
-        for cluster in means["cluster"].to_list():
-            query = "lower_hemi == True and cluster == " + str(cluster)
-            color = cmap(cluster % 10)
-
-            if plot_poles:
-                self.ax.line(
-                    self.plugin.data.query(query)["plunge"].to_list(),
-                    self.plugin.data.query(query)["trend"].to_list(),
-                    ".",
-                    color=color,
-                    markersize=6,
-                    alpha=0.9,
-                    zorder=4,
-                )
-                self.ax.line(
-                    means.query(f"cluster == {cluster}")["plunge"].to_list(),
-                    means.query(f"cluster == {cluster}")["trend"].to_list(),
-                    marker="*",
-                    color=color,
-                    markersize=14,
-                    markeredgecolor="k",
-                    zorder=5,
-                )
-
-            if plot_gcs:
-                self.ax.plane(
-                    self.plugin.data.query(query)["strike"].to_list(),
-                    self.plugin.data.query(query)["dip"].to_list(),
-                    color=color,
-                    linewidth=1.0,
-                    alpha=0.45,
-                    zorder=4,
-                )
-                self.ax.plane(
-                    means.query(f"cluster == {cluster}")["strike"].to_list(),
-                    means.query(f"cluster == {cluster}")["dip"].to_list(),
-                    color=color,
-                    linewidth=4.0,
-                    alpha=1,
-                    zorder=5,
-                )
-        self.append_log("k-means clustering completed.")
-
-    def _plot_vmf(self):
-        V = self.plugin.data[["l", "m", "n"]].values
+    def _calc_vmf(self):
+        """Used to calculate Von Mises-Fisher mean parameters and test."""
+        V = self.data[["l", "m", "n"]].values
         S = V.sum(axis=0)
         S_norm = float(np.linalg.norm(S))
         if S_norm == 0.0:
@@ -919,13 +869,14 @@ class qAttitudeDialog(QDialog):
 
         mean_xyz = S / S_norm
         tr, pl = lmn_to_trend_plunge(mean_xyz[0], mean_xyz[1], mean_xyz[2])
-        self.ax.line(pl, tr, "r*", markersize=12, zorder=5)
-        self.append_log(
-            f"VMF mean plotted at trend={tr:.2f}, plunge={pl:.2f} in red."
-        )
 
-    def _plot_bingham(self):
-        V = self.plugin.data[["l", "m", "n"]].values
+    def _calc_kent(self):
+        """Used to calculate Kent mean parameters and test."""
+        pass
+
+    def _calc_bingham(self):
+        """Used to calculate Von Mises-Fisher mean parameters and test."""
+        V = self.data[["l", "m", "n"]].values
         V = V / np.linalg.norm(V, axis=1, keepdims=True)
         T = (V.T @ V) / V.shape[0]
         evals, evecs = np.linalg.eigh(T)
@@ -935,6 +886,160 @@ class qAttitudeDialog(QDialog):
         beta = beta / np.linalg.norm(beta)
 
         tr, pl = lmn_to_trend_plunge(beta[0], beta[1], beta[2])
+
+    # ================= PLOTTING methods =================
+
+    def _plot_empty(self):
+        """Used to create an empty plot at startup or when no data are available."""
+        try:
+            self.ax.clear()
+            self.ax.grid(True, zorder=0, alpha=0.5)
+            self.ax.grid(kind="polar", zorder=0, alpha=0.5)
+            self.canvas.draw()
+        except Exception:
+            pass
+
+    def _update_plot(self):
+        """Used to update plot depending on GUI state. First the base plot is created, then overlays are added."""
+        if self.data.empty:
+            self._plot_empty()
+            return
+
+        is_planes = self.data_planes.isChecked()
+        show_individual = self.chk_individual.isChecked()
+        show_contours = self.chk_contours.isChecked()
+        plane_mode = self.plane_mode_combo.currentIndex()
+        plot_poles = not is_planes or plane_mode in (0, 2)
+        plot_gcs = is_planes and plane_mode in (1, 2)
+
+        try:
+            self.ax.clear()
+            self.ax.grid(True, zorder=0, alpha=0.5)
+            self.ax.grid(kind="polar", zorder=0, alpha=0.5)
+
+            if not self.data.empty:
+                query = "lower_hemi == True"
+                if show_contours:
+                    self.ax.density_contourf(
+                        self.data.query(query)["plunge"],
+                        self.data.query(query)["trend"],
+                        measurement="lines",
+                        cmap=self.contour_cmap_combo.currentText(),
+                        alpha=0.6,
+                        levels=int(self.contour_levels.value()),
+                        zorder=1,
+                    )
+                if show_individual:
+                    if plot_gcs:
+                        self.ax.plane(
+                            self.data.query(query)["strike"].to_list(),
+                            self.data.query(query)["dip"].to_list(),
+                            color=self.point_color_combo.currentText(),
+                            linewidth=1,
+                            alpha=0.5,
+                            zorder=2,
+                        )
+                    if plot_poles:
+                        self.ax.line(
+                            self.data.query(query)["plunge"].to_list(),
+                            self.data.query(query)["trend"].to_list(),
+                            ".",
+                            color=self.point_color_combo.currentText(),
+                            markersize=4,
+                            alpha=1,
+                            zorder=3,
+                        )
+                try:
+                    x, y = stereonet_math.line(
+                        self.data.query(query)["plunge"].to_list(),
+                        self.data.query(query)["trend"].to_list(),
+                    )
+                    self._last_projected = np.column_stack([x, y]).astype(float)
+                except Exception:
+                    self._last_projected = None
+
+            if self.chk_plot_clusters.isChecked():
+                self._plot_clusters()
+            if self.chk_vmf.isChecked():
+                self._plot_vmf()
+            if self.chk_kent.isChecked():
+                self._plot_kent()
+            if self.chk_bingham.isChecked():
+                self._plot_bingham()
+
+            self.canvas.draw()
+            self.append_log("Plot updated.")
+        except Exception as e:
+            tb = traceback.format_exc()
+            self.append_log(f"ERROR: {type(e).__name__}: {e}")
+            QMessageBox.critical(
+                self, "qAttitude", f"Error: {type(e).__name__}: {e}\n\n{tb}"
+            )
+
+    def _plot_clusters(self):
+        """Used to plot clusters."""
+        is_planes = self.data_planes.isChecked()
+        plane_mode = self.plane_mode_combo.currentIndex()
+        plot_poles = not is_planes or plane_mode in (0, 2)
+        plot_gcs = is_planes and plane_mode in (1, 2)
+
+        cmap = plt.get_cmap("tab10")
+        for cluster in self.means["cluster"].to_list():
+            query = "lower_hemi == True and cluster == " + str(cluster)
+            color = cmap(cluster % 10)
+
+            if plot_poles:
+                self.ax.line(
+                    self.data.query(query)["plunge"].to_list(),
+                    self.data.query(query)["trend"].to_list(),
+                    ".",
+                    color=color,
+                    markersize=6,
+                    alpha=0.9,
+                    zorder=4,
+                )
+                self.ax.line(
+                    self.means.query(f"cluster == {cluster}")["plunge"].to_list(),
+                    self.means.query(f"cluster == {cluster}")["trend"].to_list(),
+                    marker="*",
+                    color=color,
+                    markersize=14,
+                    markeredgecolor="k",
+                    zorder=5,
+                )
+
+            if plot_gcs:
+                self.ax.plane(
+                    self.data.query(query)["strike"].to_list(),
+                    self.data.query(query)["dip"].to_list(),
+                    color=color,
+                    linewidth=1.0,
+                    alpha=0.45,
+                    zorder=4,
+                )
+                self.ax.plane(
+                    self.means.query(f"cluster == {cluster}")["strike"].to_list(),
+                    self.means.query(f"cluster == {cluster}")["dip"].to_list(),
+                    color=color,
+                    linewidth=4.0,
+                    alpha=1,
+                    zorder=5,
+                )
+        self.append_log("k-means clustering completed.")
+
+    def _plot_vmf(self):
+        """Used to plot Von Mises-Fisher mean."""
+        self.ax.line(pl, tr, "r*", markersize=12, zorder=5)
+        self.append_log(
+            f"VMF mean plotted at trend={tr:.2f}, plunge={pl:.2f} in red."
+        )
+
+    def _plot_kent(self):
+        """Used to plot Kent mean."""
+        pass
+
+    def _plot_bingham(self):
+        """Used to plot Bingham mean."""
         self.ax.line(pl, tr, "D", color="#1f77b4", markersize=7, zorder=5)
 
         dipdir = wrap360(tr + 180)

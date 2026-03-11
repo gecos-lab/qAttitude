@@ -17,21 +17,6 @@ class qAttitudePlugin:
         self.toolbar = self.iface.pluginToolBar()
         self.dlg = None
 
-        # Initialize the central data store
-        columns = [
-            "dip",
-            "dipdir",
-            "strike",
-            "plunge",
-            "trend",
-            "l",
-            "m",
-            "n",
-            "cluster",
-            "lower_hemi",
-        ]
-        self.data = pd.DataFrame(columns=columns)
-
     def add_action(
         self,
         icon_path,
