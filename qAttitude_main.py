@@ -97,48 +97,48 @@ def lmn_to_trend_plunge(l, m, n):
 
 
 def dipdir_dip_to_pole_lmn(dipdir, dip):
-    pole_trend = wrap360(dipdir + 180)
+    pole_trend = wrap360(np.asarray(dipdir) + 180)
     pole_plunge = 90.0 - dip
     return trend_plunge_to_lmn(pole_trend, pole_plunge)
 
 
 def dipdir2strike(dipdir):
-    strike = wrap360(dipdir - 90.0)
+    strike = wrap360(np.asarray(dipdir) - 90.0)
     return strike
 
 
 def strike2dipdir(strike):
-    dipdir = wrap360(strike + 90.0)
+    dipdir = wrap360(np.asarray(strike) + 90.0)
     return dipdir
 
 
 def trend2dipdir(trend):
-    dipdir = wrap360(trend + 180)
+    dipdir = wrap360(np.asarray(trend) + 180)
     return dipdir
 
 
 def dipdir2trend(dipdir):
-    trend = wrap360(dipdir + 180)
+    trend = wrap360(np.asarray(dipdir) + 180)
     return trend
 
 
 def trend2strike(trend):
-    strike = dipdir2strike(trend2dipdir(trend))
+    strike = dipdir2strike(trend2dipdir(np.asarray(trend)))
     return strike
 
 
 def strike2trend(strike):
-    trend = dipdir2trend(strike2dipdir(strike))
+    trend = dipdir2trend(strike2dipdir(np.asarray(strike)))
     return trend
 
 
 def dip2plunge(dip):
-    plunge = 90.0 - dip
+    plunge = 90.0 - np.asarray(dip)
     return plunge
 
 
 def plunge2dip(plunge):
-    dip = 90.0 - plunge
+    dip = 90.0 - np.asarray(plunge)
     return dip
 
 
@@ -497,15 +497,15 @@ class qAttitudeDialog(QDialog):
         gridp.addWidget(self.chk_contours, 1, 0)
         gridp.addWidget(self.contour_levels, 1, 1)
 
-        self.chk_plot_clusters = QCheckBox("Plot k-means clusters")
+        self.chk_plot_clusters = QCheckBox("Plot k-means clusters (circle)")
         self.chk_plot_clusters.setChecked(False)
         gridp.addWidget(self.chk_plot_clusters, 2, 0, 1, 2)
 
-        self.chk_vmf = QCheckBox("Plot Von Mises-Fisher mean (red)")
+        self.chk_vmf = QCheckBox("Plot Von Mises-Fisher mean (star)")
         self.chk_vmf.setChecked(False)
-        self.chk_kent = QCheckBox("Plot Kent mean (green)")
+        self.chk_kent = QCheckBox("Plot Kent mean (X)")
         self.chk_kent.setChecked(False)
-        self.chk_bingham = QCheckBox("Plot Bingham β axis & girdle (blue)")
+        self.chk_bingham = QCheckBox("Plot Bingham axes & girdle (hex, sqr, tri")
         self.chk_bingham.setChecked(False)
 
         gridp.addWidget(self.chk_vmf, 3, 0, 1, 2)
@@ -973,7 +973,7 @@ class qAttitudeDialog(QDialog):
                 self.means["cluster"] == cluster, "kent_theta_s2"
             ] = ths2 * 180 / np.pi
 
-            # Bingham HERE ---------------------------------------------
+            # Bingham distribution parameters
             V = self.data[["l", "m", "n"]].values
             T = (V.T @ V) / V.shape[0]
             evals, evecs = np.linalg.eigh(T)
@@ -1141,7 +1141,7 @@ class qAttitudeDialog(QDialog):
                 self.ax.line(
                     self.means.query(f"cluster == {cluster}")["k_plunge"].to_list(),
                     self.means.query(f"cluster == {cluster}")["k_trend"].to_list(),
-                    marker="*",
+                    marker="o",
                     color=color,
                     markersize=14,
                     markeredgecolor="k",
@@ -1207,16 +1207,122 @@ class qAttitudeDialog(QDialog):
                             self.means["cluster"] == cluster, "vmf_plunge"
                         ].to_list()
                     ),
-                    "r*",
-                    markersize=12,
+                    ls="--",
+                    color=color,
+                    linewidth=4.0,
+                    alpha=1,
                     zorder=5,
                 )
         self.append_log(f"VMF mean plotted.")
 
     def _plot_kent(self):
         """Used to plot Kent mean."""
-        pass
+        is_planes = self.data_planes.isChecked()
+        plane_mode = self.plane_mode_combo.currentIndex()
+        plot_poles = not is_planes or plane_mode in (0, 2)
+        plot_gcs = is_planes and plane_mode in (1, 2)
+        cmap = plt.get_cmap("tab10")
+
+        for cluster in self.means["cluster"]:
+            color = cmap(cluster % 10)
+            if plot_poles:
+                self.ax.line(
+                    self.means.loc[
+                        self.means["cluster"] == cluster, "kent_plunge"
+                    ].to_list(),
+                    self.means.loc[
+                        self.means["cluster"] == cluster, "kent_trend"
+                    ].to_list(),
+                    marker="X",
+                    color=color,
+                    markersize=12,
+                    markeredgecolor="k",
+                    zorder=5,
+                )
+            if plot_gcs:
+                self.ax.plane(
+                    trend2strike(
+                        self.means.loc[
+                            self.means["cluster"] == cluster, "kent_trend"
+                        ].to_list()
+                    ),
+                    plunge2dip(
+                        self.means.loc[
+                            self.means["cluster"] == cluster, "kent_plunge"
+                        ].to_list()
+                    ),
+                    ls="-.",
+                    color=color,
+                    linewidth=4.0,
+                    alpha=1,
+                    zorder=5,
+                )
+        self.append_log(f"Kent mean plotted.")
 
     def _plot_bingham(self):
         """Used to plot Bingham mean."""
-        pass
+        is_planes = self.data_planes.isChecked()
+        plane_mode = self.plane_mode_combo.currentIndex()
+        plot_poles = not is_planes or plane_mode in (0, 2)
+        plot_gcs = is_planes and plane_mode in (1, 2)
+        cmap = plt.get_cmap("tab10")
+
+        for cluster in self.means["cluster"]:
+            color = cmap(cluster % 10)
+            self.ax.line(
+                    self.means.loc[
+                        self.means["cluster"] == cluster, "bingham_e1_plunge"
+                    ],
+                    self.means.loc[
+                        self.means["cluster"] == cluster, "bingham_e1_trend"
+                    ],
+                    marker="H",
+                    color=color,
+                    markersize=14,
+                    markeredgecolor="k",
+                    zorder=5,
+                )
+            self.ax.line(
+                    self.means.loc[
+                        self.means["cluster"] == cluster, "bingham_e2_plunge"
+                    ],
+                    self.means.loc[
+                        self.means["cluster"] == cluster, "bingham_e2_trend"
+                    ],
+                    marker="s",
+                    color=color,
+                    markersize=14,
+                    markeredgecolor="k",
+                    zorder=5,
+                )
+            self.ax.line(
+                    self.means.loc[
+                        self.means["cluster"] == cluster, "bingham_e3_plunge"
+                    ],
+                    self.means.loc[
+                        self.means["cluster"] == cluster, "bingham_e3_trend"
+                    ],
+                    marker="^",
+                    color=color,
+                    markersize=14,
+                    markeredgecolor="k",
+                    zorder=5,
+                )
+            self.ax.plane(
+                    trend2strike(
+                        self.means.loc[
+                            self.means["cluster"] == cluster, "bingham_e3_trend"
+                        ]
+                    ),
+                    plunge2dip(
+                        self.means.loc[
+                            self.means["cluster"] == cluster, "bingham_e3_plunge"
+                        ]
+                    ),
+                    ls="-",
+                    color=color,
+                    linewidth=4.0,
+                    alpha=1,
+                    zorder=5,
+                )
+        self.append_log(f"Kent mean plotted.")
