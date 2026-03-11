@@ -29,6 +29,7 @@ from qgis.PyQt.QtWidgets import (
     QRadioButton,
     QMessageBox,
     QPlainTextEdit,
+    QButtonGroup,
 )
 
 from qgis.core import QgsProject, QgsVectorLayer, QgsMimeDataUtils, QgsMapLayer
@@ -152,28 +153,45 @@ class StereoGisDialog(QDialog):
         self.layer_combo = QComboBox()
         grid.addWidget(self.layer_combo, 0, 1, 1, 3)
 
-        grid.addWidget(QLabel("Data:"), 1, 0)
-        self.data_combo = QComboBox()
-        self.data_combo.addItems(["Planes (dip/dipdir)", "Lines (plunge/trend)"])
-        grid.addWidget(self.data_combo, 1, 1, 1, 3)
-
         self.field1_label = QLabel("Dip field:")
         self.field2_label = QLabel("DipDir field:")
         self.field1_combo = QComboBox()
         self.field2_combo = QComboBox()
-        grid.addWidget(self.field1_label, 2, 0)
-        grid.addWidget(self.field1_combo, 2, 1, 1, 3)
-        grid.addWidget(self.field2_label, 3, 0)
-        grid.addWidget(self.field2_combo, 3, 1, 1, 3)
+        grid.addWidget(self.field1_label, 1, 0)
+        grid.addWidget(self.field1_combo, 1, 1, 1, 3)
+        grid.addWidget(self.field2_label, 2, 0)
+        grid.addWidget(self.field2_combo, 2, 1, 1, 3)
+
+        self.data_planes = QRadioButton("Planes (dip/dipdir)")
+        self.data_lines = QRadioButton("Lines (plunge/trend)")
+        self.data_planes.setChecked(True)
+        grid.addWidget(self.data_planes, 3, 0, 1, 2)
+        grid.addWidget(self.data_lines, 3, 2, 1, 2)
+
+        self.analysis_axial = QRadioButton("Axial/Bidirectional")
+        self.analysis_polar = QRadioButton("Polar/Unidirectional")
+        self.analysis_axial.setChecked(True)
+        grid.addWidget(self.analysis_axial, 4, 0, 1, 2)
+        grid.addWidget(self.analysis_polar, 4, 2, 1, 2)
+
+        self.data_type_group = QButtonGroup(self)
+        self.data_type_group.addButton(self.data_planes)
+        self.data_type_group.addButton(self.data_lines)
+
+        self.analysis_type_group = QButtonGroup(self)
+        self.analysis_type_group.addButton(self.analysis_axial)
+        self.analysis_type_group.addButton(self.analysis_polar)
 
         self.layer_combo.currentIndexChanged.connect(self.on_layer_combo_changed)
-        self.data_combo.currentIndexChanged.connect(self.on_data_type_changed)
+        self.data_planes.toggled.connect(self.on_data_type_changed)
+        self.data_lines.toggled.connect(self.on_data_type_changed)
         self.field1_combo.currentIndexChanged.connect(self._load_data_and_plot)
         self.field2_combo.currentIndexChanged.connect(self._load_data_and_plot)
+        self.analysis_axial.toggled.connect(self._load_data_and_plot)
+        self.analysis_polar.toggled.connect(self._load_data_and_plot)
 
-        # ... (rest of the UI setup is the same)
         # K-medoids
-        g_km = QGroupBox("K-medoids clustering")
+        g_km = QGroupBox("K-means clustering")
         left.addWidget(g_km)
         gridk = QGridLayout(g_km)
 
@@ -227,7 +245,7 @@ class StereoGisDialog(QDialog):
         gridp.addWidget(self.chk_contours, 1, 0)
         gridp.addWidget(self.contour_levels, 1, 1)
 
-        self.chk_plot_clusters = QCheckBox("Plot k-medoid clusters")
+        self.chk_plot_clusters = QCheckBox("Plot k-means clusters")
         self.chk_plot_clusters.setChecked(False)
         gridp.addWidget(self.chk_plot_clusters, 2, 0, 1, 2)
 
@@ -355,7 +373,9 @@ class StereoGisDialog(QDialog):
         self._refresh_field_controls()
         self._load_data_and_plot()
 
-    def on_data_type_changed(self):
+    def on_data_type_changed(self, checked):
+        if not checked:
+            return
         self._refresh_field_controls()
         self._load_data_and_plot()
 
@@ -464,7 +484,7 @@ class StereoGisDialog(QDialog):
         self.field2_combo.blockSignals(False)
 
     def _refresh_field_controls(self):
-        is_planes = self.data_combo.currentIndex() == 0
+        is_planes = self.data_planes.isChecked()
         self.field1_label.setText("Dip field:" if is_planes else "Plunge field:")
         self.field2_label.setText("DipDir field:" if is_planes else "Trend field:")
         self.plane_mode_combo.setEnabled(is_planes)
@@ -530,6 +550,10 @@ class StereoGisDialog(QDialog):
         self.log_output.clear()
 
     def _load_data_and_plot(self):
+        sender = self.sender()
+        if isinstance(sender, QRadioButton) and not sender.isChecked():
+            return
+
         layer = self.analysis_layer
         if (
             not layer
@@ -540,13 +564,19 @@ class StereoGisDialog(QDialog):
             self._update_plot()
             return
 
-        is_planes = self.data_combo.currentIndex() == 0
+        is_planes = self.data_planes.isChecked()
         field1 = self.field1_combo.currentText()
         field2 = self.field2_combo.currentText()
+        analysis_type = "axial" if self.analysis_axial.isChecked() else "polar"
 
         try:
             self.plugin.data = read_orientations_from_layer_selection(
-                layer, is_planes, field1, field2, log=self.append_log
+                layer,
+                field1,
+                field2,
+                is_planes=is_planes,
+                analysis_type=analysis_type,
+                log=self.append_log,
             )
         except Exception as e:
             self.plugin.data = pd.DataFrame()
@@ -563,7 +593,7 @@ class StereoGisDialog(QDialog):
             self._plot_empty()
             return
 
-        is_planes = self.data_combo.currentIndex() == 0
+        is_planes = self.data_planes.isChecked()
         show_individual = self.chk_individual.isChecked()
         show_contours = self.chk_contours.isChecked()
         plane_mode = self.plane_mode_combo.currentIndex()
@@ -600,20 +630,38 @@ class StereoGisDialog(QDialog):
 
     def _plot_clusters(self):
         k = int(self.k_spin.value())
-        n = self.plugin.data.shape[0]
-        if k > n:
-            self.append_log(f"Invalid k: {k} > {n}.")
+
+        # Determine the number of original data points
+        analysis_type = "axial" if self.analysis_axial.isChecked() else "polar"
+        if analysis_type == "axial":
+            n_orig = self.plugin.data["lower_hemi"].sum()
+        else:
+            n_orig = self.plugin.data.shape[0]
+
+        if n_orig == 0:
+            self.append_log("No data to cluster.")
             return
+
+        if k > n_orig:
+            self.append_log(
+                f"Number of clusters ({k}) is greater than the number of data points ({n_orig}). "
+                f"Reducing number of clusters to {n_orig}."
+            )
+            k = n_orig
+            self.k_spin.blockSignals(True)
+            self.k_spin.setValue(k)
+            self.k_spin.blockSignals(False)
 
         data_with_clusters, means = kmeans(
             self.plugin.data.copy(),
-            nn_clusters=k,
+            n_clusters=k,
+            analysis_type=analysis_type,
             init="k-means++",
             random_state=self.seed_spin.value(),
             log=self.append_log,
         )
 
-        is_planes = self.data_combo.currentIndex() == 0
+        is_planes = self.data_planes.isChecked()
         plane_mode = self.plane_mode_combo.currentIndex()
         plot_poles = not is_planes or plane_mode in (0, 2)
         plot_gcs = is_planes and plane_mode in (1, 2)

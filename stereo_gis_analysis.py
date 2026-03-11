@@ -123,8 +123,9 @@ def axial_angular_distance(u: np.ndarray, v: np.ndarray) -> float:
 
 
 def kmedoids_axial(
-    data,
-    k: int,
+    data: pd.DataFrame,
+    n_clusters: int = 1,
+    analysis_type: str = "axial",
     maxiter: int = 100,
     init_medoids: np.ndarray | None = None,
     log=None,
@@ -172,9 +173,13 @@ def kmedoids_axial(
 
     # run clustering
     vectors = data[["l", "m", "n"]].values
-    kmedoids = KMedoids(n_clusters=k * 2, init=init, metric=axial_angular_distance).fit(
-        vectors
-    )
+
+    if analysis_type == "axial":
+        n_clusters = n_clusters * 2
+
+    kmedoids = KMedoids(
+        n_clusters=n_clusters, init=init, metric=axial_angular_distance
+    ).fit(vectors)
 
     # write results in dataframe
     data["cluster"] = kmedoids.labels_
@@ -197,20 +202,23 @@ def kmedoids_axial(
 
     _log(log, f"all medoids: {medoids.to_string()}")
 
-    # keep clusters with medoid pointing downwards only
-    medoids = medoids.loc[medoids["lower_hemi"] == True].reset_index(drop=True)
-    _log(log, f"n kept medoids - downwards only: {medoids.shape[0]}")
+    # for axial data, keep clusters with medoid pointing downwards only
+    if analysis_type == "axial":
+        medoids = medoids.loc[medoids["lower_hemi"] == True].reset_index(drop=True)
+        _log(log, f"n kept medoids - downwards only: {medoids.shape[0]}")
+
     _log(log, f"kept medoids - lower hemisphere: {medoids.to_string()}")
 
     return data, medoids
 
 
 def kmeans(
-    data,
-    nn_clusters=1,
+    data: pd.DataFrame,
+    n_clusters: int = 1,
+    analysis_type: str = "axial",
     init="k-means++",
-    max_iter=100,
-    random_state=None,
+    max_iter: int = 100,
+    random_state: int = None,
     log=None,
 ):
     """
@@ -238,18 +246,21 @@ def kmeans(
 
         inertia – Sum of distances of samples to their closest cluster center
     """
-    # initialize
+
+    if analysis_type == "axial":
+        n_clusters = n_clusters * 2
+
     n = data.shape[0]
     if n == 0:
         raise QgsProcessingException("No vectors to cluster.")
-    if not (1 <= nn_clusters <= n):
+    if not (1 <= n_clusters <= n):
         raise QgsProcessingException(f"k must be in [1, {n}]")
-    _log(log, f"k-means: n={n}, k={nn_clusters}, maxiter={max_iter}")
+    _log(log, f"k-means: n={n}, k={n_clusters}, maxiter={max_iter}")
 
     # run clustering
     vectors = data[["l", "m", "n"]].values
     kmeans = KMeans(
-        n_clusters=nn_clusters * 2,
+        n_clusters=n_clusters,
         init=init,
         n_init="auto",
         max_iter=max_iter,
@@ -273,24 +284,30 @@ def kmeans(
         means["l"], means["m"], means["n"]
     )
     means["lower_hemi"] = means["n"] <= 0
-    
+
     # Add strike and dip for plotting great circles
-    means['dip'] = 90.0 - means['plunge']
-    dipdir = wrap360(means['trend'] - 180)
-    means['strike'] = dipdir2strike(dipdir)
+    means["dip"] = 90.0 - means["plunge"]
+    dipdir = wrap360(means["trend"] - 180)
+    means["strike"] = dipdir2strike(dipdir)
 
     _log(log, f"all means: {means.to_string()}")
 
-    # keep clusters with medoid pointing downwards only
-    means = means.loc[means["lower_hemi"] == True].reset_index(drop=True)
-    _log(log, f"n kept means - downwards only: {means.shape[0]}")
+    # for axial data, keep clusters with medoid pointing downwards only
+    if analysis_type == "axial":
+        means = means.loc[means["lower_hemi"] == True].reset_index(drop=True)
+        _log(log, f"n kept means - downwards only: {means.shape[0]}")
     _log(log, f"kept means - lower hemisphere: {means.to_string()}")
 
     return data, means
 
 
 def read_orientations_from_layer_selection(
-    layer, is_planes: bool, field1: str, field2: str, log=None
+    layer,
+    field1: str,
+    field2: str,
+    is_planes: bool = True,
+    analysis_type: str = "axial",
+    log=None,
 ) -> pd.DataFrame:
     """
     Reads orientations from the layer.
@@ -370,14 +387,16 @@ def read_orientations_from_layer_selection(
     data_lower["cluster"] = None
     data_lower["lower_hemi"] = True
 
-    # now duplicate the data to perform axially symmetric orientation analysis
-    data_upper = data_lower.copy()
-    data_upper["l"] = -data_upper["l"]
-    data_upper["m"] = -data_upper["m"]
-    data_upper["n"] = -data_upper["n"]
-    data_upper["lower_hemi"] = False
-
-    data = pd.concat([data_lower, data_upper]).reset_index(drop=True)
+    # now for axial data duplicate the data to perform axially symmetric orientation analysis
+    if analysis_type == "axial":
+        data_upper = data_lower.copy()
+        data_upper["l"] = -data_upper["l"]
+        data_upper["m"] = -data_upper["m"]
+        data_upper["n"] = -data_upper["n"]
+        data_upper["lower_hemi"] = False
+        data = pd.concat([data_lower, data_upper]).reset_index(drop=True)
+    else:
+        data = data_lower.reset_index(drop=True)
 
     _log(
         log,
