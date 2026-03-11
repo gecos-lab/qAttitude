@@ -415,8 +415,8 @@ class qAttitudeDialog(QDialog):
             [
                 "black",
                 "red",
-                "blue",
                 "green",
+                "blue",
                 "cyan",
                 "magenta",
                 "yellow",
@@ -432,11 +432,11 @@ class qAttitudeDialog(QDialog):
         self.contour_cmap_combo = QComboBox()
         cmaps = [
             "Greys",
-            "Purples",
-            "Blues",
-            "Greens",
-            "Oranges",
             "Reds",
+            "Greens",
+            "Blues",
+            "Purples",
+            "Oranges",
             "YlOrBr",
             "YlOrRd",
             "OrRd",
