@@ -12,6 +12,7 @@ if os.path.isdir(LIB) and LIB not in sys.path:
 
 import numpy as np
 import pandas as pd
+from sklearn.cluster import KMeans
 
 from qgis.PyQt.QtWidgets import (
     QDialog,
@@ -32,7 +33,7 @@ from qgis.PyQt.QtWidgets import (
     QButtonGroup,
 )
 
-from qgis.core import QgsProject, QgsVectorLayer, QgsMimeDataUtils, QgsMapLayer
+from qgis.core import QgsProject, QgsVectorLayer, QgsMimeDataUtils, QgsMapLayer, QgsProcessingException
 
 from qgis.PyQt.QtCore import pyqtSignal, Qt
 
@@ -46,17 +47,165 @@ from matplotlib.figure import Figure
 import mplstereonet
 from mplstereonet import stereonet_math
 
-from . import stereo_gis_plot
-from .stereo_gis_analysis import (
-    read_orientations_from_layer_selection,
-    vmf_mean_axial,
-    bingham_principal_axes_axial,
-    kmedoids_axial,
-    kmeans,
-    lmn_to_trend_plunge,
-    wrap360,
-    dipdir2strike,
-)
+
+def _log(log, message: str) -> None:
+    if log is not None:
+        log(message)
+
+
+def wrap360(deg):
+    deg = deg % 360.0
+    return deg
+
+
+def deg2rad(deg):
+    return deg * np.pi / 180.0
+
+
+def rad2deg(rad):
+    return rad * 180.0 / np.pi
+
+
+def trend_plunge_to_lmn(trend, plunge):
+    trend_rad = deg2rad(trend)
+    plunge_rad = deg2rad(plunge)
+    l = np.cos(plunge_rad) * np.cos(trend_rad)  # East
+    m = np.cos(plunge_rad) * np.sin(trend_rad)  # North
+    n = -np.sin(plunge_rad)  # Up (negative is down-plunge)
+    return l, m, n
+
+
+def lmn_to_trend_plunge(l, m, n):
+    plunge_rad = np.arcsin(-n)
+    trend_rad = np.arctan2(m, l)  # Corrected arctan2 order
+    plunge = wrap360(rad2deg(plunge_rad))
+    trend = wrap360(rad2deg(trend_rad))
+    return trend, plunge
+
+
+def dipdir_dip_to_pole_lmn(dipdir, dip):
+    pole_trend = wrap360(dipdir + 180)
+    pole_plunge = 90.0 - dip
+    return trend_plunge_to_lmn(pole_trend, pole_plunge)
+
+
+def dipdir2strike(dipdir):
+    strike = wrap360(dipdir - 90.0)
+    return strike
+
+
+def strike2dipdir(strike):
+    dipdir = wrap360(strike + 90.0)
+    return dipdir
+
+
+def read_orientations_from_layer_selection(
+    layer,
+    field1: str,
+    field2: str,
+    is_planes: bool = True,
+    analysis_type: str = "axial",
+    log=None,
+) -> pd.DataFrame:
+    """
+    Reads orientations from the layer.
+    Uses selected features if any are selected; otherwise uses all features.
+    """
+    # first read lists of data irrespective of plane vs. line
+    idx1 = layer.fields().indexOf(field1)
+    idx2 = layer.fields().indexOf(field2)
+    if idx1 < 0 or idx2 < 0:
+        raise QgsProcessingException("Selected field not found in layer.")
+
+    use_selected = bool(layer.selectedFeatureCount())
+    feats = layer.getSelectedFeatures() if use_selected else layer.getFeatures()
+
+    _log(
+        log,
+        f"Reading orientations from {'selected features' if use_selected else 'all features'} "
+        f"using fields '{field1}' and '{field2}'.",
+    )
+
+    in_list_1 = []
+    in_list_2 = []
+    invalid_count = 0
+
+    for f in feats:
+        a = f.attributes()
+        v1 = a[idx1]
+        v2 = a[idx2]
+        if v1 is None or v2 is None:
+            invalid_count += 1
+            continue
+        try:
+            v1 = float(v1)
+            v2 = float(v2)
+        except (ValueError, TypeError):
+            invalid_count += 1
+            continue
+
+        # Validate dip/plunge and dipdir/trend values
+        if is_planes:  # Planes: dip, dipdir
+            if not (0.0 <= v1 <= 90.0):
+                invalid_count += 1
+                continue
+            if not (0.0 <= v2 <= 360.0):
+                invalid_count += 1
+                continue
+        else:  # Lines: plunge, trend
+            if not (0.0 <= v1 <= 90.0):
+                invalid_count += 1
+                continue
+            if not (0.0 <= v2 <= 360.0):
+                invalid_count += 1
+                continue
+
+        in_list_1.append(v1)
+        in_list_2.append(v2)
+    in_list_1 = np.array(in_list_1)
+    in_list_2 = np.array(in_list_2)
+
+    # now populate the dataframe according to plane vs. line
+    data_lower = pd.DataFrame({})
+    if is_planes:
+        data_lower["dip"] = in_list_1
+        data_lower["dipdir"] = in_list_2
+        data_lower["strike"] = dipdir2strike(in_list_2)
+        data_lower["plunge"] = 90.0 - in_list_1
+        data_lower["trend"] = wrap360(in_list_2 + 180)
+        l, m, n = dipdir_dip_to_pole_lmn(in_list_2, in_list_1)
+    else:
+        data_lower["plunge"] = in_list_1
+        data_lower["trend"] = in_list_2
+        l, m, n = trend_plunge_to_lmn(in_list_2, in_list_1)
+
+    data_lower["l"] = l
+    data_lower["m"] = m
+    data_lower["n"] = n
+    data_lower["cluster"] = None
+    data_lower["lower_hemi"] = True
+
+    # now for axial data duplicate the data to perform axially symmetric orientation analysis
+    if analysis_type == "axial":
+        data_upper = data_lower.copy()
+        data_upper["l"] = -data_upper["l"]
+        data_upper["m"] = -data_upper["m"]
+        data_upper["n"] = -data_upper["n"]
+        data_upper["lower_hemi"] = False
+        data = pd.concat([data_lower, data_upper]).reset_index(drop=True)
+    else:
+        data = data_lower.reset_index(drop=True)
+
+    _log(
+        log,
+        f"Orientation reading complete: valid={data_lower.shape[0]}, invalid/skipped={invalid_count}.",
+    )
+    if not data.empty:
+        _log(
+            log,
+            data.iloc[0:10].to_string(),
+        )
+    return data
 
 
 class LayerDropGroupBox(QGroupBox):
@@ -102,7 +251,7 @@ class LayerDropGroupBox(QGroupBox):
         event.ignore()
 
 
-class StereoGisDialog(QDialog):
+class qAttitudeDialog(QDialog):
     def __init__(self, iface, plugin):
         super().__init__(iface.mainWindow())
         self.iface = iface
@@ -190,7 +339,7 @@ class StereoGisDialog(QDialog):
         self.analysis_axial.toggled.connect(self._load_data_and_plot)
         self.analysis_polar.toggled.connect(self._load_data_and_plot)
 
-        # K-medoids
+        # K-means
         g_km = QGroupBox("K-means clustering")
         left.addWidget(g_km)
         gridk = QGridLayout(g_km)
@@ -560,7 +709,7 @@ class StereoGisDialog(QDialog):
             or not self.field1_combo.currentText()
             or not self.field2_combo.currentText()
         ):
-            self.plugin.data = pd.DataFrame()
+            self.plugin.data = self.plugin.data.iloc[0:0]
             self._update_plot()
             return
 
@@ -579,7 +728,7 @@ class StereoGisDialog(QDialog):
                 log=self.append_log,
             )
         except Exception as e:
-            self.plugin.data = pd.DataFrame()
+            self.plugin.data = self.plugin.data.iloc[0:0]
             tb = traceback.format_exc()
             self.append_log(f"ERROR: {type(e).__name__}: {e}")
             QMessageBox.critical(
@@ -601,16 +750,49 @@ class StereoGisDialog(QDialog):
         plot_gcs = is_planes and plane_mode in (1, 2)
 
         try:
-            self._last_projected = stereo_gis_plot.plot_base_stereonet(
-                self.ax,
-                self.plugin.data,
-                plot_poles=show_individual and plot_poles,
-                plot_gcs=show_individual and plot_gcs,
-                show_contours=show_contours,
-                contour_levels=self.contour_levels.value(),
-                point_color=self.point_color_combo.currentText(),
-                contour_cmap=self.contour_cmap_combo.currentText(),
-            )
+            self.ax.clear()
+            self.ax.grid(True, zorder=0, alpha=0.5)
+            self.ax.grid(kind="polar", zorder=0, alpha=0.5)
+
+            if not self.plugin.data.empty:
+                query = "lower_hemi == True"
+                if show_contours:
+                    self.ax.density_contourf(
+                        self.plugin.data.query(query)["plunge"],
+                        self.plugin.data.query(query)["trend"],
+                        measurement="lines",
+                        cmap=self.contour_cmap_combo.currentText(),
+                        alpha=0.6,
+                        levels=int(self.contour_levels.value()),
+                        zorder=1,
+                    )
+                if plot_gcs:
+                    self.ax.plane(
+                        self.plugin.data.query(query)["strike"].to_list(),
+                        self.plugin.data.query(query)["dip"].to_list(),
+                        color=self.point_color_combo.currentText(),
+                        linewidth=1,
+                        alpha=0.5,
+                        zorder=2,
+                    )
+                if plot_poles:
+                    self.ax.line(
+                        self.plugin.data.query(query)["plunge"].to_list(),
+                        self.plugin.data.query(query)["trend"].to_list(),
+                        ".",
+                        color=self.point_color_combo.currentText(),
+                        markersize=4,
+                        alpha=1,
+                        zorder=3,
+                    )
+                try:
+                    x, y = stereonet_math.line(
+                        self.plugin.data.query(query)["plunge"].to_list(),
+                        self.plugin.data.query(query)["trend"].to_list(),
+                    )
+                    self._last_projected = np.column_stack([x, y]).astype(float)
+                except Exception:
+                    self._last_projected = None
 
             if self.chk_plot_clusters.isChecked():
                 self._plot_clusters()
@@ -630,60 +812,135 @@ class StereoGisDialog(QDialog):
 
     def _plot_clusters(self):
         k = int(self.k_spin.value())
-
-        # Determine the number of original data points
         analysis_type = "axial" if self.analysis_axial.isChecked() else "polar"
+        n_clusters = k
         if analysis_type == "axial":
-            n_orig = self.plugin.data["lower_hemi"].sum()
-        else:
-            n_orig = self.plugin.data.shape[0]
+            n_clusters = k * 2
 
-        if n_orig == 0:
+        n = len(self.plugin.data)
+        if n == 0:
             self.append_log("No data to cluster.")
             return
 
-        if k > n_orig:
+        if k > n:
             self.append_log(
-                f"Number of clusters ({k}) is greater than the number of data points ({n_orig}). "
-                f"Reducing number of clusters to {n_orig}."
+                f"Number of clusters ({k}) is greater than the number of data points ({n}). "
+                f"Reducing number of clusters to {n}."
             )
-            k = n_orig
+            k = n
+            n_clusters = k * 2 if analysis_type == "axial" else k
             self.k_spin.blockSignals(True)
             self.k_spin.setValue(k)
             self.k_spin.blockSignals(False)
 
-        data_with_clusters, means = kmeans(
-            self.plugin.data.copy(),
-            n_clusters=k,
-            analysis_type=analysis_type,
+        vectors = self.plugin.data[["l", "m", "n"]].values
+        kmeans_model = KMeans(
+            n_clusters=n_clusters,
             init="k-means++",
+            n_init="auto",
+            max_iter=100,
+            tol=0.0001,
+            verbose=0,
             random_state=self.seed_spin.value(),
-            log=self.append_log,
+            copy_x=True,
+            algorithm="lloyd",
+        ).fit(vectors)
+
+        self.plugin.data["cluster"] = kmeans_model.labels_
+
+        means = pd.DataFrame(kmeans_model.cluster_centers_, columns=["l", "m", "n"])
+        means["cluster"] = np.arange(means.shape[0])
+        means["trend"], means["plunge"] = lmn_to_trend_plunge(
+            means["l"], means["m"], means["n"]
         )
+        means["lower_hemi"] = means["n"] <= 0
+        means["dip"] = 90.0 - means["plunge"]
+        dipdir = wrap360(means["trend"] - 180)
+        means["strike"] = dipdir2strike(dipdir)
+
+        if analysis_type == "axial":
+            means = means.loc[means["lower_hemi"] == True].reset_index(drop=True)
 
         is_planes = self.data_planes.isChecked()
         plane_mode = self.plane_mode_combo.currentIndex()
         plot_poles = not is_planes or plane_mode in (0, 2)
         plot_gcs = is_planes and plane_mode in (1, 2)
 
-        stereo_gis_plot.plot_clusters(
-            self.ax, data_with_clusters, means, plot_poles, plot_gcs
-        )
+        cmap = plt.get_cmap("tab10")
+        for cluster in means["cluster"].to_list():
+            query = "lower_hemi == True and cluster == " + str(cluster)
+            color = cmap(cluster % 10)
+
+            if plot_poles:
+                self.ax.line(
+                    self.plugin.data.query(query)["plunge"].to_list(),
+                    self.plugin.data.query(query)["trend"].to_list(),
+                    ".",
+                    color=color,
+                    markersize=6,
+                    alpha=0.9,
+                    zorder=4,
+                )
+                self.ax.line(
+                    means.query(f"cluster == {cluster}")["plunge"].to_list(),
+                    means.query(f"cluster == {cluster}")["trend"].to_list(),
+                    marker="*",
+                    color=color,
+                    markersize=14,
+                    markeredgecolor="k",
+                    zorder=5,
+                )
+
+            if plot_gcs:
+                self.ax.plane(
+                    self.plugin.data.query(query)["strike"].to_list(),
+                    self.plugin.data.query(query)["dip"].to_list(),
+                    color=color,
+                    linewidth=1.0,
+                    alpha=0.45,
+                    zorder=4,
+                )
+                self.ax.plane(
+                    means.query(f"cluster == {cluster}")["strike"].to_list(),
+                    means.query(f"cluster == {cluster}")["dip"].to_list(),
+                    color=color,
+                    linewidth=4.0,
+                    alpha=1,
+                    zorder=5,
+                )
         self.append_log("k-means clustering completed.")
 
     def _plot_vmf(self):
-        vmf = vmf_mean_axial(self.plugin.data, log=self.append_log)
-        m = vmf["mean_xyz"]
-        if np.isfinite(m).all():
-            tr, pl = stereo_gis_plot.plot_vmf(self.ax, m)
-            self.append_log(
-                f"VMF mean plotted at trend={tr:.2f}, plunge={pl:.2f} in red."
-            )
+        V = self.plugin.data[["l", "m", "n"]].values
+        S = V.sum(axis=0)
+        S_norm = float(np.linalg.norm(S))
+        if S_norm == 0.0:
+            return
+
+        mean_xyz = S / S_norm
+        tr, pl = lmn_to_trend_plunge(mean_xyz[0], mean_xyz[1], mean_xyz[2])
+        self.ax.line(pl, tr, "r*", markersize=12, zorder=5)
+        self.append_log(
+            f"VMF mean plotted at trend={tr:.2f}, plunge={pl:.2f} in red."
+        )
 
     def _plot_bingham(self):
-        b = bingham_principal_axes_axial(self.plugin.data, log=self.append_log)
-        beta = b["beta_axis_xyz"]
-        tr, pl = stereo_gis_plot.plot_bingham(self.ax, beta)
+        V = self.plugin.data[["l", "m", "n"]].values
+        V = V / np.linalg.norm(V, axis=1, keepdims=True)
+        T = (V.T @ V) / V.shape[0]
+        evals, evecs = np.linalg.eigh(T)
+        idx = np.argsort(evals)[::-1]
+        evecs = evecs[:, idx]
+        beta = evecs[:, 0]
+        beta = beta / np.linalg.norm(beta)
+
+        tr, pl = lmn_to_trend_plunge(beta[0], beta[1], beta[2])
+        self.ax.line(pl, tr, "D", color="#1f77b4", markersize=7, zorder=5)
+
+        dipdir = wrap360(tr + 180)
+        dip = 90.0 - pl
+        strike = dipdir2strike(dipdir)
+        self.ax.plane(strike, dip, color="#1f77b4", linewidth=1.4, alpha=0.85, zorder=5)
         self.append_log(
             f"Bingham beta axis plotted at trend={tr:.2f}, plunge={pl:.2f}."
         )
