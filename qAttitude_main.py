@@ -12,6 +12,12 @@ if os.path.isdir(LIB) and LIB not in sys.path:
 
 import numpy as np
 import pandas as pd
+
+pd.options.display.expand_frame_repr = True
+pd.options.display.max_colwidth = 8
+pd.options.display.max_rows = 20
+pd.options.display.precision = 3
+
 from sklearn.cluster import KMeans
 import sphstat.singlesample
 from mpmath.libmp.backend import sage_utils
@@ -226,7 +232,7 @@ def read_orientations_from_layer_selection(
     data_lower["m"] = m
     data_lower["n"] = n
     data_lower["cluster"] = None
-    data_lower["lower_hemi"] = True
+    data_lower["low_hemi"] = True
 
     # now for axial data duplicate the data to perform axially symmetric orientation analysis
     if analysis_type == "axial":
@@ -234,7 +240,7 @@ def read_orientations_from_layer_selection(
         data_upper["l"] = -data_upper["l"]
         data_upper["m"] = -data_upper["m"]
         data_upper["n"] = -data_upper["n"]
-        data_upper["lower_hemi"] = False
+        data_upper["low_hemi"] = False
         data = pd.concat([data_lower, data_upper]).reset_index(drop=True)
     else:
         data = data_lower.reset_index(drop=True)
@@ -331,38 +337,38 @@ class qAttitudeDialog(QDialog):
             "m",
             "n",
             "cluster",
-            "lower_hemi",
+            "low_hemi",
         ]
         self.data = pd.DataFrame(columns=data_columns)
 
         # means dataframe storing mean orientations and other parameters for each cluster created on the fly
         means_columns = [
             "cluster",
-            "lower_hemi",
+            "low_hemi",
             "n_data",
-            "k_trend",
-            "k_plunge",
-            "vmf_trend",
-            "vmf_plunge",
+            "k_tr",
+            "k_pl",
+            "vmf_tr",
+            "vmf_pl",
             "vmf_K",
-            "vmf_theta_alpha",
-            "vmf_ci_kappa_low",
-            "vmf_ci_kappa_high",
-            "kent_trend",
-            "kent_plunge",
+            "vmf_t_a",
+            "vmf_ck_l",
+            "vmf_ck_h",
+            "kent_tr",
+            "kent_pl",
             "kent_K",
-            "kent_beta",
-            "kent_theta_s1",
-            "kent_theta_s2",
-            "bingham_e1_trend",
-            "bingham_e1_plunge",
-            "bingham_e1_mag",
-            "bingham_e2_trend",
-            "bingham_e2_plunge",
-            "bingham_e2_mag",
-            "bingham_e3_trend",
-            "bingham_e3_plunge",
-            "bingham_e3_mag",
+            "kent_b",
+            "kent_ts1",
+            "kent_ts2",
+            "bg_e1_tr",
+            "bg_e1_pl",
+            "bg_e1_mg",
+            "bg_e2_tr",
+            "bg_e2_pl",
+            "bg_e2_mg",
+            "bg_e3_tr",
+            "bg_e3_pl",
+            "bg_e3_mg",
         ]
         self.means = pd.DataFrame(columns=means_columns)
 
@@ -665,7 +671,8 @@ class qAttitudeDialog(QDialog):
 
     def set_analysis_layer(self, layer: QgsMapLayer):
         """Used to set the layer to be analyzed at startup, when a layer is dropped, or after the
-        combo is changed. Signals are disconnected and then reconnected to avoid loops."""
+        combo is changed. Signals are disconnected and then reconnected to avoid loops.
+        """
         if self.analysis_layer:
             try:
                 self.analysis_layer.selectionChanged.disconnect(
@@ -898,18 +905,18 @@ class qAttitudeDialog(QDialog):
         # clean and polulate the means dataframe
         self.means = self.means.iloc[0:0]
         self.means["cluster"] = np.arange(kmeans_model.cluster_centers_.shape[0])
-        self.means["lower_hemi"] = kmeans_model.cluster_centers_[:, 2] <= 0
+        self.means["low_hemi"] = kmeans_model.cluster_centers_[:, 2] <= 0
         self.means["n_data"] = self.data.groupby("cluster").size()
-        self.means["k_trend"], self.means["k_plunge"] = lmn_to_trend_plunge(
+        self.means["k_tr"], self.means["k_pl"] = lmn_to_trend_plunge(
             kmeans_model.cluster_centers_[:, 0],
             kmeans_model.cluster_centers_[:, 1],
             kmeans_model.cluster_centers_[:, 2],
         )
 
         if analysis_type == "axial":
-            self.means = self.means.loc[
-                self.means["lower_hemi"] == True
-            ].reset_index(drop=True)
+            self.means = self.means.loc[self.means["low_hemi"] == True].reset_index(
+                drop=True
+            )
 
         # calculate means for each cluster using the samplecart dictionary in the format used by ss
         for cluster in self.means["cluster"]:
@@ -927,25 +934,21 @@ class qAttitudeDialog(QDialog):
             )
             th, ph = fisher_dist["mdir"]
             lat, lon = ss_utils.poltoll(th, ph)
-            self.means.loc[
-                self.means["cluster"] == cluster, "vmf_plunge"
-            ] = lat * 180 / np.pi
-            self.means.loc[
-                self.means["cluster"] == cluster, "vmf_trend"
-            ] = lon * 180 / np.pi
+            self.means.loc[self.means["cluster"] == cluster, "vmf_pl"] = (
+                lat * 180 / np.pi
+            )
+            self.means.loc[self.means["cluster"] == cluster, "vmf_tr"] = (
+                lon * 180 / np.pi
+            )
             self.means.loc[self.means["cluster"] == cluster, "vmf_K"] = fisher_dist[
                 "kappa"
             ]
-            self.means.loc[
-                self.means["cluster"] == cluster, "vmf_theta_alpha"
-            ] = fisher_dist["thetalpha"] * 180 / np.pi
+            self.means.loc[self.means["cluster"] == cluster, "vmf_t_a"] = (
+                fisher_dist["thetalpha"] * 180 / np.pi
+            )
             (
-                self.means.loc[
-                    self.means["cluster"] == cluster, "vmf_ci_kappa_low"
-                ],
-                self.means.loc[
-                    self.means["cluster"] == cluster, "vmf_ci_kappa_high"
-                ],
+                self.means.loc[self.means["cluster"] == cluster, "vmf_ck_l"],
+                self.means.loc[self.means["cluster"] == cluster, "vmf_ck_h"],
             ) = fisher_dist["cikappa"]
 
             # Kent distribution parameters
@@ -954,75 +957,91 @@ class qAttitudeDialog(QDialog):
             th = th % (np.pi)
             ph = ph % (2 * np.pi)
             lat, lon = ss_utils.poltoll(th, ph)
-            self.means.loc[
-                self.means["cluster"] == cluster, "kent_plunge"
-            ] = lat * 180 / np.pi
-            self.means.loc[
-                self.means["cluster"] == cluster, "kent_trend"
-            ] = lon * 180 / np.pi
+            self.means.loc[self.means["cluster"] == cluster, "kent_pl"] = (
+                lat * 180 / np.pi
+            )
+            self.means.loc[self.means["cluster"] == cluster, "kent_tr"] = (
+                lon * 180 / np.pi
+            )
             self.means.loc[self.means["cluster"] == cluster, "kent_K"] = kappahat
-            self.means.loc[self.means["cluster"] == cluster, "kent_beta"] = betahat
+            self.means.loc[self.means["cluster"] == cluster, "kent_b"] = betahat
 
             # Kent elliptical confidence cone for the mean direction
             # cconept could be used to plot ellipse on stereoplot, but must be converted to plunge/trend
             cconept, ths1, ths2 = ss_singlesample.kentmeanccone(samplecart=samplecart)
-            self.means.loc[
-                self.means["cluster"] == cluster, "kent_theta_s1"
-            ] = ths1 * 180 / np.pi
-            self.means.loc[
-                self.means["cluster"] == cluster, "kent_theta_s2"
-            ] = ths2 * 180 / np.pi
+            self.means.loc[self.means["cluster"] == cluster, "kent_ts1"] = (
+                ths1 * 180 / np.pi
+            )
+            self.means.loc[self.means["cluster"] == cluster, "kent_ts2"] = (
+                ths2 * 180 / np.pi
+            )
 
             # Bingham distribution parameters
-            V = self.data[["l", "m", "n"]].values
-            T = (V.T @ V) / V.shape[0]
-            evals, evecs = np.linalg.eigh(T)
-            idx = np.argsort(evals)[::-1]
-            evals = evals[idx]
-            self.means.loc[
-                self.means["cluster"] == cluster, "bingham_e1_mag"
-            ] = evals[0]
-            self.means.loc[
-                self.means["cluster"] == cluster, "bingham_e2_mag"
-            ] = evals[1]
-            self.means.loc[
-                self.means["cluster"] == cluster, "bingham_e3_mag"
-            ] = evals[2]
-            evecs = evecs[:, idx]
-            e1 = evecs[:, 0]
-            e2 = evecs[:, 1]
-            e3 = evecs[:, 2]
-            self.means.loc[self.means['cluster'] == cluster, 'bingham_e1_trend'], self.means.loc[self.means['cluster'] == cluster, 'bingham_e1_plunge'] = lmn_to_trend_plunge(e1[0], e1[1], e1[2])
-            self.means.loc[self.means['cluster'] == cluster, 'bingham_e2_trend'], self.means.loc[self.means['cluster'] == cluster, 'bingham_e2_plunge'] = lmn_to_trend_plunge(e2[0], e2[1], e2[2])
-            self.means.loc[self.means['cluster'] == cluster, 'bingham_e3_trend'], self.means.loc[self.means['cluster'] == cluster, 'bingham_e3_plunge'] = lmn_to_trend_plunge(e3[0], e3[1], e3[2])
+            T = samplecart["points"].T @ samplecart["points"] / samplecart["n"]
+            eigenvalues, eigenvectors = np.linalg.eig(T)
+            idx = np.argsort(eigenvalues)[::-1]
+            eigenvalues = eigenvalues[idx]
+            eigenvectors = eigenvectors[:, idx]
+            self.means.loc[self.means["cluster"] == cluster, "bg_e1_mg"] = eigenvalues[
+                0
+            ]
+            self.means.loc[self.means["cluster"] == cluster, "bg_e2_mg"] = eigenvalues[
+                1
+            ]
+            self.means.loc[self.means["cluster"] == cluster, "bg_e3_mg"] = eigenvalues[
+                2
+            ]
+            e1 = eigenvectors[:, 0]
+            e2 = eigenvectors[:, 1]
+            e3 = eigenvectors[:, 2]
+            if e1[2] > 0:
+                e1 = -e1
+            if e2[2] > 0:
+                e2 = -e2
+            if e3[2] > 0:
+                e3 = -e3
+            (
+                self.means.loc[self.means["cluster"] == cluster, "bg_e1_tr"],
+                self.means.loc[self.means["cluster"] == cluster, "bg_e1_pl"],
+            ) = lmn_to_trend_plunge(e1[0], e1[1], e1[2])
+            (
+                self.means.loc[self.means["cluster"] == cluster, "bg_e2_tr"],
+                self.means.loc[self.means["cluster"] == cluster, "bg_e2_pl"],
+            ) = lmn_to_trend_plunge(e2[0], e2[1], e2[2])
+            (
+                self.means.loc[self.means["cluster"] == cluster, "bg_e3_tr"],
+                self.means.loc[self.means["cluster"] == cluster, "bg_e3_pl"],
+            ) = lmn_to_trend_plunge(e3[0], e3[1], e3[2])
 
-            # tests
+        self.append_log(f"means dataframe:\n{self.means.to_string()}")
 
-            # # Is uniform [True] test:
-            # uniform_test = ss_singlesample.isuniform(sample=samplecart, alpha=alpha)
-            # this_stats['Uniform test statistic'] = uniform_test['teststat']
-            # this_stats['Uniform critical range'] = uniform_test['crange']
-            # this_stats['Is uniform test'] = uniform_test['testresult']
-            #
-            # # Is Fisher [True] test
-            # fisher_test = ss_singlesample.isfisher(samplecart=samplecart, alpha=alpha, plotflag=False)
-            # this_stats['Colatitute test statistic'] = fisher_test['colatitute']['stat']
-            # this_stats['Colatitute critical range'] = fisher_test['colatitute']['crange']
-            # this_stats['Is colatitute exponential'] = fisher_test['colatitute']['H0']
-            # this_stats['Longitude test statistic'] = fisher_test['longitude']['stat']
-            # this_stats['Longitude critical range'] = fisher_test['longitude']['crange']
-            # this_stats['Is longitude uniform'] = fisher_test['longitude']['H0']
-            # this_stats['Two-variable test statistic'] = fisher_test['twovariable']['stat']
-            # this_stats['Two-variable critical range'] = fisher_test['twovariable']['crange']
-            # this_stats['Is two-variable normal'] = fisher_test['twovariable']['H0']
-            # this_stats['Is Fisher test'] = fisher_test['H0']
-            #
-            # # Is Fisher [True] vs. Kent [False] test
-            # fisher_kent_test = ss_singlesample.isfishervskent(samplecart=samplecart, alpha=alpha)
-            # this_stats['Fisher vs. Kent test statistic'] = fisher_kent_test['K']
-            # this_stats['Fisher vs. Kent critical value'] = fisher_kent_test['cval']
-            # this_stats['Fisher vs. Kent p-value'] = fisher_kent_test['p']
-            # this_stats['Is Fisher vs. Kent test'] = fisher_kent_test['testresult']
+        # tests
+
+        # # Is uniform [True] test:
+        # uniform_test = ss_singlesample.isuniform(sample=samplecart, alpha=alpha)
+        # this_stats['Uniform test statistic'] = uniform_test['teststat']
+        # this_stats['Uniform critical range'] = uniform_test['crange']
+        # this_stats['Is uniform test'] = uniform_test['testresult']
+        #
+        # # Is Fisher [True] test
+        # fisher_test = ss_singlesample.isfisher(samplecart=samplecart, alpha=alpha, plotflag=False)
+        # this_stats['Colatitute test statistic'] = fisher_test['colatitute']['stat']
+        # this_stats['Colatitute critical range'] = fisher_test['colatitute']['crange']
+        # this_stats['Is colatitute exponential'] = fisher_test['colatitute']['H0']
+        # this_stats['Longitude test statistic'] = fisher_test['longitude']['stat']
+        # this_stats['Longitude critical range'] = fisher_test['longitude']['crange']
+        # this_stats['Is longitude uniform'] = fisher_test['longitude']['H0']
+        # this_stats['Two-variable test statistic'] = fisher_test['twovariable']['stat']
+        # this_stats['Two-variable critical range'] = fisher_test['twovariable']['crange']
+        # this_stats['Is two-variable normal'] = fisher_test['twovariable']['H0']
+        # this_stats['Is Fisher test'] = fisher_test['H0']
+        #
+        # # Is Fisher [True] vs. Kent [False] test
+        # fisher_kent_test = ss_singlesample.isfishervskent(samplecart=samplecart, alpha=alpha)
+        # this_stats['Fisher vs. Kent test statistic'] = fisher_kent_test['K']
+        # this_stats['Fisher vs. Kent critical value'] = fisher_kent_test['cval']
+        # this_stats['Fisher vs. Kent p-value'] = fisher_kent_test['p']
+        # this_stats['Is Fisher vs. Kent test'] = fisher_kent_test['testresult']
 
         # finally update plot
         self._update_plot()
@@ -1058,7 +1077,7 @@ class qAttitudeDialog(QDialog):
             self.ax.grid(kind="polar", zorder=0, alpha=0.5)
 
             if not self.data.empty:
-                query = "lower_hemi == True"
+                query = "low_hemi == True"
                 if show_contours:
                     self.ax.density_contourf(
                         self.data.query(query)["plunge"],
@@ -1125,7 +1144,7 @@ class qAttitudeDialog(QDialog):
         cmap = plt.get_cmap("tab10")
 
         for cluster in self.means["cluster"].to_list():
-            query = "lower_hemi == True and cluster == " + str(cluster)
+            query = "low_hemi == True and cluster == " + str(cluster)
             color = cmap(cluster % 10)
 
             if plot_poles:
@@ -1139,8 +1158,8 @@ class qAttitudeDialog(QDialog):
                     zorder=4,
                 )
                 self.ax.line(
-                    self.means.query(f"cluster == {cluster}")["k_plunge"].to_list(),
-                    self.means.query(f"cluster == {cluster}")["k_trend"].to_list(),
+                    self.means.query(f"cluster == {cluster}")["k_pl"].to_list(),
+                    self.means.query(f"cluster == {cluster}")["k_tr"].to_list(),
                     marker="o",
                     color=color,
                     markersize=14,
@@ -1159,10 +1178,10 @@ class qAttitudeDialog(QDialog):
                 )
                 self.ax.plane(
                     trend2strike(
-                        self.means.query(f"cluster == {cluster}")["k_trend"].to_list()
+                        self.means.query(f"cluster == {cluster}")["k_tr"].to_list()
                     ),
                     plunge2dip(
-                        self.means.query(f"cluster == {cluster}")["k_plunge"].to_list()
+                        self.means.query(f"cluster == {cluster}")["k_pl"].to_list()
                     ),
                     color=color,
                     linewidth=4.0,
@@ -1184,10 +1203,10 @@ class qAttitudeDialog(QDialog):
             if plot_poles:
                 self.ax.line(
                     self.means.loc[
-                        self.means["cluster"] == cluster, "vmf_plunge"
+                        self.means["cluster"] == cluster, "vmf_pl"
                     ].to_list(),
                     self.means.loc[
-                        self.means["cluster"] == cluster, "vmf_trend"
+                        self.means["cluster"] == cluster, "vmf_tr"
                     ].to_list(),
                     marker="*",
                     color=color,
@@ -1199,12 +1218,12 @@ class qAttitudeDialog(QDialog):
                 self.ax.plane(
                     trend2strike(
                         self.means.loc[
-                            self.means["cluster"] == cluster, "vmf_trend"
+                            self.means["cluster"] == cluster, "vmf_tr"
                         ].to_list()
                     ),
                     plunge2dip(
                         self.means.loc[
-                            self.means["cluster"] == cluster, "vmf_plunge"
+                            self.means["cluster"] == cluster, "vmf_pl"
                         ].to_list()
                     ),
                     ls="--",
@@ -1228,10 +1247,10 @@ class qAttitudeDialog(QDialog):
             if plot_poles:
                 self.ax.line(
                     self.means.loc[
-                        self.means["cluster"] == cluster, "kent_plunge"
+                        self.means["cluster"] == cluster, "kent_pl"
                     ].to_list(),
                     self.means.loc[
-                        self.means["cluster"] == cluster, "kent_trend"
+                        self.means["cluster"] == cluster, "kent_tr"
                     ].to_list(),
                     marker="X",
                     color=color,
@@ -1243,12 +1262,12 @@ class qAttitudeDialog(QDialog):
                 self.ax.plane(
                     trend2strike(
                         self.means.loc[
-                            self.means["cluster"] == cluster, "kent_trend"
+                            self.means["cluster"] == cluster, "kent_tr"
                         ].to_list()
                     ),
                     plunge2dip(
                         self.means.loc[
-                            self.means["cluster"] == cluster, "kent_plunge"
+                            self.means["cluster"] == cluster, "kent_pl"
                         ].to_list()
                     ),
                     ls="-.",
@@ -1270,59 +1289,47 @@ class qAttitudeDialog(QDialog):
         for cluster in self.means["cluster"]:
             color = cmap(cluster % 10)
             self.ax.line(
-                    self.means.loc[
-                        self.means["cluster"] == cluster, "bingham_e1_plunge"
-                    ],
-                    self.means.loc[
-                        self.means["cluster"] == cluster, "bingham_e1_trend"
-                    ],
-                    marker="H",
-                    color=color,
-                    markersize=14,
-                    markeredgecolor="k",
-                    zorder=5,
-                )
+                self.means.loc[self.means["cluster"] == cluster, "bg_e1_pl"].to_list(),
+                self.means.loc[self.means["cluster"] == cluster, "bg_e1_tr"].to_list(),
+                marker="H",
+                color=color,
+                markersize=14,
+                markeredgecolor="k",
+                zorder=5,
+            )
             self.ax.line(
-                    self.means.loc[
-                        self.means["cluster"] == cluster, "bingham_e2_plunge"
-                    ],
-                    self.means.loc[
-                        self.means["cluster"] == cluster, "bingham_e2_trend"
-                    ],
-                    marker="s",
-                    color=color,
-                    markersize=14,
-                    markeredgecolor="k",
-                    zorder=5,
-                )
+                self.means.loc[self.means["cluster"] == cluster, "bg_e2_pl"].to_list(),
+                self.means.loc[self.means["cluster"] == cluster, "bg_e2_tr"].to_list(),
+                marker="s",
+                color=color,
+                markersize=14,
+                markeredgecolor="k",
+                zorder=5,
+            )
             self.ax.line(
-                    self.means.loc[
-                        self.means["cluster"] == cluster, "bingham_e3_plunge"
-                    ],
-                    self.means.loc[
-                        self.means["cluster"] == cluster, "bingham_e3_trend"
-                    ],
-                    marker="^",
-                    color=color,
-                    markersize=14,
-                    markeredgecolor="k",
-                    zorder=5,
-                )
+                self.means.loc[self.means["cluster"] == cluster, "bg_e3_pl"].to_list(),
+                self.means.loc[self.means["cluster"] == cluster, "bg_e3_tr"].to_list(),
+                marker="^",
+                color=color,
+                markersize=14,
+                markeredgecolor="k",
+                zorder=5,
+            )
             self.ax.plane(
-                    trend2strike(
-                        self.means.loc[
-                            self.means["cluster"] == cluster, "bingham_e3_trend"
-                        ]
-                    ),
-                    plunge2dip(
-                        self.means.loc[
-                            self.means["cluster"] == cluster, "bingham_e3_plunge"
-                        ]
-                    ),
-                    ls="-",
-                    color=color,
-                    linewidth=4.0,
-                    alpha=1,
-                    zorder=5,
-                )
-        self.append_log(f"Kent mean plotted.")
+                trend2strike(
+                    self.means.loc[
+                        self.means["cluster"] == cluster, "bg_e3_tr"
+                    ].to_list()
+                ),
+                plunge2dip(
+                    self.means.loc[
+                        self.means["cluster"] == cluster, "bg_e3_pl"
+                    ].to_list()
+                ),
+                ls="-",
+                color=color,
+                linewidth=4.0,
+                alpha=1,
+                zorder=5,
+            )
+        self.append_log(f"Bingham mean plotted.")
