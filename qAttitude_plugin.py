@@ -2,7 +2,9 @@
 # qAttitude @ Andrea Bistacchi 2024-06-26
 
 from qgis.PyQt.QtGui import QIcon
-from qgis.PyQt.QtWidgets import QAction
+from qgis.PyQt.QtWidgets import QAction, QDockWidget
+from qgis.core import Qgis
+from qgis.PyQt.QtCore import Qt
 import os.path
 import pandas as pd
 from .qAttitude_main import qAttitudeDialog
@@ -15,7 +17,7 @@ class qAttitudePlugin:
         self.actions = []
         self.menu = "&qAttitude"
         self.toolbar = self.iface.pluginToolBar()
-        self.dlg = None
+        self.dock_widget = None
 
     def add_action(
         self,
@@ -65,9 +67,20 @@ class qAttitudePlugin:
         for action in self.actions:
             self.iface.removePluginMenu("&qAttitude", action)
             self.iface.removeToolBarIcon(action)
+        if self.dock_widget:
+            self.iface.removeDockWidget(self.dock_widget)
 
     def run(self):
-        if self.dlg is None:
+        if not self.dock_widget:
+            self.dock_widget = QDockWidget("qAttitude", self.iface.mainWindow())
+            self.dock_widget.setAllowedAreas(
+                Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea
+            )
             self.dlg = qAttitudeDialog(self.iface, self)
-        self.dlg.show()
-        result = self.dlg.exec_()
+            self.dock_widget.setWidget(self.dlg)
+            self.iface.addDockWidget(Qt.RightDockWidgetArea, self.dock_widget)
+        else:
+            if self.dock_widget.isVisible():
+                self.dock_widget.hide()
+            else:
+                self.dock_widget.show()

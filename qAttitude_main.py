@@ -25,8 +25,7 @@ import sphstat.singlesample as ss_singlesample
 import sphstat.utils as ss_utils
 
 from qgis.PyQt.QtWidgets import (
-    QDialog,
-    QHBoxLayout,
+    QWidget,
     QVBoxLayout,
     QGridLayout,
     QLabel,
@@ -41,6 +40,7 @@ from qgis.PyQt.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QButtonGroup,
+    QScrollArea,
 )
 
 from qgis.core import (
@@ -51,7 +51,7 @@ from qgis.core import (
     QgsProcessingException,
 )
 
-from qgis.PyQt.QtCore import pyqtSignal, Qt
+from qgis.PyQt.QtCore import pyqtSignal, Qt, QEvent
 
 import matplotlib
 
@@ -308,19 +308,16 @@ class LayerDropGroupBox(QGroupBox):
 # ================= main class =================
 
 
-class qAttitudeDialog(QDialog):
+class qAttitudeDialog(QWidget):
     """Main class creating the dialog and managing analysis and plotting with various methods."""
 
     def __init__(self, iface, plugin):
-        super().__init__(iface.mainWindow())
+        super().__init__()
         self.iface = iface
         self.plugin = plugin
 
         self.analysis_layer = None
         self._layer_ids_by_index = []  # keeps combo index -> layer.id()
-
-        self.setWindowTitle("qAttitude")
-        self.resize(1100, 750)
 
         self._picked_medoid_indices = []
         self._picking_enabled = False
@@ -377,6 +374,13 @@ class qAttitudeDialog(QDialog):
 
     # ================= GUI methods =================
 
+    def eventFilter(self, source, event):
+        if event.type() == QEvent.Wheel and (
+            isinstance(source, QComboBox) or isinstance(source, QSpinBox)
+        ):
+            return True
+        return super().eventFilter(source, event)
+
     def showEvent(self, event):
         """Reimplements showEvent() that runs when opening the plugin."""
         super().showEvent(event)
@@ -394,27 +398,46 @@ class qAttitudeDialog(QDialog):
 
     def _init_ui(self):
         """Creates all GUI objects."""
-        main = QHBoxLayout(self)
+        main = QVBoxLayout(self)
+        main.setContentsMargins(0, 0, 0, 0)
 
-        left = QVBoxLayout()
-        right = QVBoxLayout()
-        main.addLayout(left, 0)
-        main.addLayout(right, 1)
+        # Plot canvas
+        self.fig = Figure(figsize=(6, 6), dpi=120)
+        self.canvas = FigureCanvas(self.fig)
+        self.canvas.setMinimumHeight(300)
+        main.addWidget(self.canvas)
+
+        self.ax = self.fig.add_subplot(111, projection="stereonet")
+        self.ax.grid(True)
+        self.ax.grid(kind="polar")
+        self.canvas.mpl_connect("button_press_event", self._on_plot_click)
+
+        # Scroll area for controls
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        main.addWidget(scroll_area)
+
+        scroll_content = QWidget()
+        scroll_area.setWidget(scroll_content)
+        controls_layout = QVBoxLayout(scroll_content)
 
         # Inputs
         g_in = LayerDropGroupBox("Input layer (all or selected features)", self)
         g_in.layerDropped.connect(self.on_layer_dropped)
-        left.addWidget(g_in)
+        controls_layout.addWidget(g_in)
         grid = QGridLayout(g_in)
 
         grid.addWidget(QLabel("Layer:"), 0, 0)
         self.layer_combo = QComboBox()
+        self.layer_combo.installEventFilter(self)
         grid.addWidget(self.layer_combo, 0, 1, 1, 3)
 
         self.field1_label = QLabel("Dip field:")
         self.field2_label = QLabel("DipDir field:")
         self.field1_combo = QComboBox()
+        self.field1_combo.installEventFilter(self)
         self.field2_combo = QComboBox()
+        self.field2_combo.installEventFilter(self)
         grid.addWidget(self.field1_label, 1, 0)
         grid.addWidget(self.field1_combo, 1, 1, 1, 3)
         grid.addWidget(self.field2_label, 2, 0)
@@ -450,11 +473,12 @@ class qAttitudeDialog(QDialog):
 
         # K-means
         g_km = QGroupBox("K-means clustering")
-        left.addWidget(g_km)
+        controls_layout.addWidget(g_km)
         gridk = QGridLayout(g_km)
 
         gridk.addWidget(QLabel("Number of clusters:"), 0, 0)
         self.k_spin = QSpinBox()
+        self.k_spin.installEventFilter(self)
         self.k_spin.setRange(1, 20)
         self.k_spin.setValue(1)
         gridk.addWidget(self.k_spin, 0, 1)
@@ -467,6 +491,7 @@ class qAttitudeDialog(QDialog):
 
         gridk.addWidget(QLabel("Random seed:"), 2, 0)
         self.seed_spin = QSpinBox()
+        self.seed_spin.installEventFilter(self)
         self.seed_spin.setRange(0, 10**9)
         self.seed_spin.setValue(0)
         gridk.addWidget(self.seed_spin, 2, 1)
@@ -484,7 +509,7 @@ class qAttitudeDialog(QDialog):
         # Plot options and Parametric distribution fitting
         # create plot options group box
         g_plot = QGroupBox("Plot options")
-        left.addWidget(g_plot)
+        controls_layout.addWidget(g_plot)
         gridp = QGridLayout(g_plot)
 
         # create widgets
@@ -492,12 +517,14 @@ class qAttitudeDialog(QDialog):
         self.chk_individual.setChecked(True)
 
         self.plane_mode_combo = QComboBox()
+        self.plane_mode_combo.installEventFilter(self)
         self.plane_mode_combo.addItems(["Poles", "Great circles", "Both"])
 
         self.chk_contours = QCheckBox("Plot contours (levels)")
         self.chk_contours.setChecked(False)
 
         self.contour_levels = QSpinBox()
+        self.contour_levels.installEventFilter(self)
         self.contour_levels.setRange(3, 30)
         self.contour_levels.setValue(10)
 
@@ -529,6 +556,7 @@ class qAttitudeDialog(QDialog):
         self.chk_bingham_gcs.setChecked(False)
 
         self.point_color_combo = QComboBox()
+        self.point_color_combo.installEventFilter(self)
         self.point_color_combo.addItems(
             [
                 "black",
@@ -546,6 +574,7 @@ class qAttitudeDialog(QDialog):
         )
 
         self.contour_cmap_combo = QComboBox()
+        self.contour_cmap_combo.installEventFilter(self)
         cmaps = [
             "Greys",
             "Reds",
@@ -607,7 +636,7 @@ class qAttitudeDialog(QDialog):
 
         # Saving
         g_save = QGroupBox("Save to files (off by default)")
-        left.addWidget(g_save)
+        controls_layout.addWidget(g_save)
         grids = QGridLayout(g_save)
 
         self.chk_save = QCheckBox("Save outputs")
@@ -622,22 +651,10 @@ class qAttitudeDialog(QDialog):
         grids.addWidget(QLabel("Directory:"), 1, 0)
         grids.addWidget(self.out_dir, 1, 1)
         grids.addWidget(self.btn_browse, 1, 2)
-        left.addStretch(1)
-
-        # Plot canvas
-        self.fig = Figure(figsize=(6, 6), dpi=120)
-        self.canvas = FigureCanvas(self.fig)
-        self.canvas.setMinimumHeight(500)
-        right.addWidget(self.canvas, 5)
-
-        self.ax = self.fig.add_subplot(111, projection="stereonet")
-        self.ax.grid(True)
-        self.ax.grid(kind="polar")
-        self.canvas.mpl_connect("button_press_event", self._on_plot_click)
 
         # Log window
         g_log = QGroupBox("Log")
-        right.addWidget(g_log, 2)
+        controls_layout.addWidget(g_log)
         gridlog = QGridLayout(g_log)
 
         self.log_output = QPlainTextEdit(self)
@@ -649,6 +666,8 @@ class qAttitudeDialog(QDialog):
         self.btn_clear_log = QPushButton("Clear log")
         self.btn_clear_log.clicked.connect(self.clear_log)
         gridlog.addWidget(self.btn_clear_log, 1, 1)
+
+        controls_layout.addStretch(1)
 
     def on_layer_dropped(self, layer):
         """Runs when a layer is dropped on the plugin window."""
@@ -883,6 +902,8 @@ class qAttitudeDialog(QDialog):
                 analysis_type=analysis_type,
                 log=self.append_log,
             )
+            # when data are properly loaded, run analysis and plot
+            self._calc_clusters_and_plot()
         except Exception as e:
             self.data = self.data.iloc[0:0]
             self.means = self.means.iloc[0:0]
@@ -892,189 +913,203 @@ class qAttitudeDialog(QDialog):
                 self, "qAttitude", f"Error: {type(e).__name__}: {e}\n\n{tb}"
             )
 
-        # when data are properly loaded, run analysis and plot
-        self._calc_clusters_and_plot()
-
     def _calc_clusters_and_plot(self):
         """Used to calculate kmeans clusters when their number is changed ot seeds are redefined, and finally plot."""
-        k = int(self.k_spin.value())
-        analysis_type = "axial" if self.analysis_axial.isChecked() else "polar"
-        n_clusters = k
-        if analysis_type == "axial":
-            n_clusters = k * 2
+        try:
+            k = int(self.k_spin.value())
+            analysis_type = "axial" if self.analysis_axial.isChecked() else "polar"
+            n_clusters = k
+            if analysis_type == "axial":
+                n_clusters = k * 2
 
-        n = len(self.data)
-        if n == 0:
-            self.append_log("No data to cluster.")
-            return
+            n = len(self.data)
+            if n == 0:
+                self.append_log("No data to cluster.")
+                return
 
-        if k > n:
+            if k > n:
+                self.append_log(
+                    f"Number of clusters ({k}) is greater than the number of data points ({n}). "
+                    f"Reducing number of clusters to {n}."
+                )
+                k = n
+                n_clusters = k * 2 if analysis_type == "axial" else k
+                self.k_spin.blockSignals(True)
+                self.k_spin.setValue(k)
+                self.k_spin.blockSignals(False)
+
+            vectors = self.data[["l", "m", "n"]].values
+            kmeans_model = KMeans(
+                n_clusters=n_clusters,
+                init="k-means++",
+                n_init="auto",
+                max_iter=100,
+                tol=0.0001,
+                verbose=0,
+                random_state=self.seed_spin.value(),
+                copy_x=True,
+                algorithm="lloyd",
+            ).fit(vectors)
+
+            # assign cluster labels to data
+            self.data["cluster"] = kmeans_model.labels_
+
+            # clean and polulate the means dataframe
+            self.means = self.means.iloc[0:0]
+            self.means["cluster"] = np.arange(kmeans_model.cluster_centers_.shape[0])
+            self.means["low_hemi"] = kmeans_model.cluster_centers_[:, 2] <= 0
+            self.means["n_data"] = self.data.groupby("cluster").size()
+            self.means["k_tr"], self.means["k_pl"] = lmn_to_trend_plunge(
+                kmeans_model.cluster_centers_[:, 0],
+                kmeans_model.cluster_centers_[:, 1],
+                kmeans_model.cluster_centers_[:, 2],
+            )
+
+            if analysis_type == "axial":
+                self.means = self.means.loc[self.means["low_hemi"] == True].reset_index(
+                    drop=True
+                )
+
+            # calculate means for each cluster using the samplecart dictionary in the format used by ss
+            for cluster in self.means["cluster"]:
+                samplecart = dict()
+                samplecart["points"] = self.data.loc[
+                    self.data["cluster"] == cluster, ["l", "m", "n"]
+                ].to_numpy()
+                samplecart["type"] = "cart"
+                samplecart["n"] = self.data.loc[self.data["cluster"] == cluster].shape[
+                    0
+                ]
+
+                # Fisher distribution parameters
+                alpha = 0.05
+                fisher_dist = ss_singlesample.fisherparams(
+                    samplecart=samplecart, alpha=alpha
+                )
+                th, ph = fisher_dist["mdir"]
+                lat, lon = ss_utils.poltoll(th, ph)
+                self.means.loc[self.means["cluster"] == cluster, "vmf_pl"] = (
+                    lat * 180 / np.pi
+                )
+                self.means.loc[self.means["cluster"] == cluster, "vmf_tr"] = (
+                    lon * 180 / np.pi
+                )
+                self.means.loc[self.means["cluster"] == cluster, "vmf_K"] = fisher_dist[
+                    "kappa"
+                ]
+                self.means.loc[self.means["cluster"] == cluster, "vmf_t_a"] = (
+                    fisher_dist["thetalpha"] * 180 / np.pi
+                )
+                (
+                    self.means.loc[self.means["cluster"] == cluster, "vmf_ck_l"],
+                    self.means.loc[self.means["cluster"] == cluster, "vmf_ck_h"],
+                ) = fisher_dist["cikappa"]
+
+                # Kent distribution parameters
+                axes, kappahat, betahat = ss_singlesample.kentparams(
+                    samplecart=samplecart
+                )
+                th, ph = ss_utils.cart2sph(axes[0])
+                th = th % (np.pi)
+                ph = ph % (2 * np.pi)
+                lat, lon = ss_utils.poltoll(th, ph)
+                self.means.loc[self.means["cluster"] == cluster, "kent_pl"] = (
+                    lat * 180 / np.pi
+                )
+                self.means.loc[self.means["cluster"] == cluster, "kent_tr"] = (
+                    lon * 180 / np.pi
+                )
+                self.means.loc[self.means["cluster"] == cluster, "kent_K"] = kappahat
+                self.means.loc[self.means["cluster"] == cluster, "kent_b"] = betahat
+
+                # Kent elliptical confidence cone for the mean direction
+                # cconept could be used to plot ellipse on stereoplot, but must be converted to plunge/trend
+                cconept, ths1, ths2 = ss_singlesample.kentmeanccone(
+                    samplecart=samplecart
+                )
+                self.means.loc[self.means["cluster"] == cluster, "kent_ts1"] = (
+                    ths1 * 180 / np.pi
+                )
+                self.means.loc[self.means["cluster"] == cluster, "kent_ts2"] = (
+                    ths2 * 180 / np.pi
+                )
+
+                # Bingham distribution parameters
+                T = samplecart["points"].T @ samplecart["points"] / samplecart["n"]
+                eigenvalues, eigenvectors = np.linalg.eig(T)
+                idx = np.argsort(eigenvalues)[::-1]
+                eigenvalues = eigenvalues[idx]
+                eigenvectors = eigenvectors[:, idx]
+                self.means.loc[self.means["cluster"] == cluster, "bg_e1_mg"] = (
+                    eigenvalues[0]
+                )
+                self.means.loc[self.means["cluster"] == cluster, "bg_e2_mg"] = (
+                    eigenvalues[1]
+                )
+                self.means.loc[self.means["cluster"] == cluster, "bg_e3_mg"] = (
+                    eigenvalues[2]
+                )
+                e1 = eigenvectors[:, 0]
+                e2 = eigenvectors[:, 1]
+                e3 = eigenvectors[:, 2]
+                if e1[2] > 0:
+                    e1 = -e1
+                if e2[2] > 0:
+                    e2 = -e2
+                if e3[2] > 0:
+                    e3 = -e3
+                (
+                    self.means.loc[self.means["cluster"] == cluster, "bg_e1_tr"],
+                    self.means.loc[self.means["cluster"] == cluster, "bg_e1_pl"],
+                ) = lmn_to_trend_plunge(e1[0], e1[1], e1[2])
+                (
+                    self.means.loc[self.means["cluster"] == cluster, "bg_e2_tr"],
+                    self.means.loc[self.means["cluster"] == cluster, "bg_e2_pl"],
+                ) = lmn_to_trend_plunge(e2[0], e2[1], e2[2])
+                (
+                    self.means.loc[self.means["cluster"] == cluster, "bg_e3_tr"],
+                    self.means.loc[self.means["cluster"] == cluster, "bg_e3_pl"],
+                ) = lmn_to_trend_plunge(e3[0], e3[1], e3[2])
+
+            self.append_log(f"means dataframe:\n{self.means.to_string()}")
+
+            # tests
+
+            # # Is uniform [True] test:
+            # uniform_test = ss_singlesample.isuniform(sample=samplecart, alpha=alpha)
+            # this_stats['Uniform test statistic'] = uniform_test['teststat']
+            # this_stats['Uniform critical range'] = uniform_test['crange']
+            # this_stats['Is uniform test'] = uniform_test['testresult']
+            #
+            # # Is Fisher [True] test
+            # fisher_test = ss_singlesample.isfisher(samplecart=samplecart, alpha=alpha, plotflag=False)
+            # this_stats['Colatitute test statistic'] = fisher_test['colatitute']['stat']
+            # this_stats['Colatitute critical range'] = fisher_test['colatitute']['crange']
+            # this_stats['Is colatitute exponential'] = fisher_test['colatitute']['H0']
+            # this_stats['Longitude test statistic'] = fisher_test['longitude']['stat']
+            # this_stats['Longitude critical range'] = fisher_test['longitude']['crange']
+            # this_stats['Is longitude uniform'] = fisher_test['longitude']['H0']
+            # this_stats['Two-variable test statistic'] = fisher_test['twovariable']['stat']
+            # this_stats['Two-variable critical range'] = fisher_test['twovariable']['crange']
+            # this_stats['Is two-variable normal'] = fisher_test['twovariable']['H0']
+            # this_stats['Is Fisher test'] = fisher_test['H0']
+            #
+            # # Is Fisher [True] vs. Kent [False] test
+            # fisher_kent_test = ss_singlesample.isfishervskent(samplecart=samplecart, alpha=alpha)
+            # this_stats['Fisher vs. Kent test statistic'] = fisher_kent_test['K']
+            # this_stats['Fisher vs. Kent critical value'] = fisher_kent_test['cval']
+            # this_stats['Fisher vs. Kent p-value'] = fisher_kent_test['p']
+            # this_stats['Is Fisher vs. Kent test'] = fisher_kent_test['testresult']
+
+        except Exception as e:
+            self.means = self.means.iloc[0:0]
+            tb = traceback.format_exc()
             self.append_log(
-                f"Number of clusters ({k}) is greater than the number of data points ({n}). "
-                f"Reducing number of clusters to {n}."
+                "ERROR: more than one data point needs to be selected to calculate average values."
             )
-            k = n
-            n_clusters = k * 2 if analysis_type == "axial" else k
-            self.k_spin.blockSignals(True)
-            self.k_spin.setValue(k)
-            self.k_spin.blockSignals(False)
-
-        vectors = self.data[["l", "m", "n"]].values
-        kmeans_model = KMeans(
-            n_clusters=n_clusters,
-            init="k-means++",
-            n_init="auto",
-            max_iter=100,
-            tol=0.0001,
-            verbose=0,
-            random_state=self.seed_spin.value(),
-            copy_x=True,
-            algorithm="lloyd",
-        ).fit(vectors)
-
-        # assign cluster labels to data
-        self.data["cluster"] = kmeans_model.labels_
-
-        # clean and polulate the means dataframe
-        self.means = self.means.iloc[0:0]
-        self.means["cluster"] = np.arange(kmeans_model.cluster_centers_.shape[0])
-        self.means["low_hemi"] = kmeans_model.cluster_centers_[:, 2] <= 0
-        self.means["n_data"] = self.data.groupby("cluster").size()
-        self.means["k_tr"], self.means["k_pl"] = lmn_to_trend_plunge(
-            kmeans_model.cluster_centers_[:, 0],
-            kmeans_model.cluster_centers_[:, 1],
-            kmeans_model.cluster_centers_[:, 2],
-        )
-
-        if analysis_type == "axial":
-            self.means = self.means.loc[self.means["low_hemi"] == True].reset_index(
-                drop=True
-            )
-
-        # calculate means for each cluster using the samplecart dictionary in the format used by ss
-        for cluster in self.means["cluster"]:
-            samplecart = dict()
-            samplecart["points"] = self.data.loc[
-                self.data["cluster"] == cluster, ["l", "m", "n"]
-            ].to_numpy()
-            samplecart["type"] = "cart"
-            samplecart["n"] = self.data.loc[self.data["cluster"] == cluster].shape[0]
-
-            # Fisher distribution parameters
-            alpha = 0.05
-            fisher_dist = ss_singlesample.fisherparams(
-                samplecart=samplecart, alpha=alpha
-            )
-            th, ph = fisher_dist["mdir"]
-            lat, lon = ss_utils.poltoll(th, ph)
-            self.means.loc[self.means["cluster"] == cluster, "vmf_pl"] = (
-                lat * 180 / np.pi
-            )
-            self.means.loc[self.means["cluster"] == cluster, "vmf_tr"] = (
-                lon * 180 / np.pi
-            )
-            self.means.loc[self.means["cluster"] == cluster, "vmf_K"] = fisher_dist[
-                "kappa"
-            ]
-            self.means.loc[self.means["cluster"] == cluster, "vmf_t_a"] = (
-                fisher_dist["thetalpha"] * 180 / np.pi
-            )
-            (
-                self.means.loc[self.means["cluster"] == cluster, "vmf_ck_l"],
-                self.means.loc[self.means["cluster"] == cluster, "vmf_ck_h"],
-            ) = fisher_dist["cikappa"]
-
-            # Kent distribution parameters
-            axes, kappahat, betahat = ss_singlesample.kentparams(samplecart=samplecart)
-            th, ph = ss_utils.cart2sph(axes[0])
-            th = th % (np.pi)
-            ph = ph % (2 * np.pi)
-            lat, lon = ss_utils.poltoll(th, ph)
-            self.means.loc[self.means["cluster"] == cluster, "kent_pl"] = (
-                lat * 180 / np.pi
-            )
-            self.means.loc[self.means["cluster"] == cluster, "kent_tr"] = (
-                lon * 180 / np.pi
-            )
-            self.means.loc[self.means["cluster"] == cluster, "kent_K"] = kappahat
-            self.means.loc[self.means["cluster"] == cluster, "kent_b"] = betahat
-
-            # Kent elliptical confidence cone for the mean direction
-            # cconept could be used to plot ellipse on stereoplot, but must be converted to plunge/trend
-            cconept, ths1, ths2 = ss_singlesample.kentmeanccone(samplecart=samplecart)
-            self.means.loc[self.means["cluster"] == cluster, "kent_ts1"] = (
-                ths1 * 180 / np.pi
-            )
-            self.means.loc[self.means["cluster"] == cluster, "kent_ts2"] = (
-                ths2 * 180 / np.pi
-            )
-
-            # Bingham distribution parameters
-            T = samplecart["points"].T @ samplecart["points"] / samplecart["n"]
-            eigenvalues, eigenvectors = np.linalg.eig(T)
-            idx = np.argsort(eigenvalues)[::-1]
-            eigenvalues = eigenvalues[idx]
-            eigenvectors = eigenvectors[:, idx]
-            self.means.loc[self.means["cluster"] == cluster, "bg_e1_mg"] = eigenvalues[
-                0
-            ]
-            self.means.loc[self.means["cluster"] == cluster, "bg_e2_mg"] = eigenvalues[
-                1
-            ]
-            self.means.loc[self.means["cluster"] == cluster, "bg_e3_mg"] = eigenvalues[
-                2
-            ]
-            e1 = eigenvectors[:, 0]
-            e2 = eigenvectors[:, 1]
-            e3 = eigenvectors[:, 2]
-            if e1[2] > 0:
-                e1 = -e1
-            if e2[2] > 0:
-                e2 = -e2
-            if e3[2] > 0:
-                e3 = -e3
-            (
-                self.means.loc[self.means["cluster"] == cluster, "bg_e1_tr"],
-                self.means.loc[self.means["cluster"] == cluster, "bg_e1_pl"],
-            ) = lmn_to_trend_plunge(e1[0], e1[1], e1[2])
-            (
-                self.means.loc[self.means["cluster"] == cluster, "bg_e2_tr"],
-                self.means.loc[self.means["cluster"] == cluster, "bg_e2_pl"],
-            ) = lmn_to_trend_plunge(e2[0], e2[1], e2[2])
-            (
-                self.means.loc[self.means["cluster"] == cluster, "bg_e3_tr"],
-                self.means.loc[self.means["cluster"] == cluster, "bg_e3_pl"],
-            ) = lmn_to_trend_plunge(e3[0], e3[1], e3[2])
-
-        self.append_log(f"means dataframe:\n{self.means.to_string()}")
-
-        # tests
-
-        # # Is uniform [True] test:
-        # uniform_test = ss_singlesample.isuniform(sample=samplecart, alpha=alpha)
-        # this_stats['Uniform test statistic'] = uniform_test['teststat']
-        # this_stats['Uniform critical range'] = uniform_test['crange']
-        # this_stats['Is uniform test'] = uniform_test['testresult']
-        #
-        # # Is Fisher [True] test
-        # fisher_test = ss_singlesample.isfisher(samplecart=samplecart, alpha=alpha, plotflag=False)
-        # this_stats['Colatitute test statistic'] = fisher_test['colatitute']['stat']
-        # this_stats['Colatitute critical range'] = fisher_test['colatitute']['crange']
-        # this_stats['Is colatitute exponential'] = fisher_test['colatitute']['H0']
-        # this_stats['Longitude test statistic'] = fisher_test['longitude']['stat']
-        # this_stats['Longitude critical range'] = fisher_test['longitude']['crange']
-        # this_stats['Is longitude uniform'] = fisher_test['longitude']['H0']
-        # this_stats['Two-variable test statistic'] = fisher_test['twovariable']['stat']
-        # this_stats['Two-variable critical range'] = fisher_test['twovariable']['crange']
-        # this_stats['Is two-variable normal'] = fisher_test['twovariable']['H0']
-        # this_stats['Is Fisher test'] = fisher_test['H0']
-        #
-        # # Is Fisher [True] vs. Kent [False] test
-        # fisher_kent_test = ss_singlesample.isfishervskent(samplecart=samplecart, alpha=alpha)
-        # this_stats['Fisher vs. Kent test statistic'] = fisher_kent_test['K']
-        # this_stats['Fisher vs. Kent critical value'] = fisher_kent_test['cval']
-        # this_stats['Fisher vs. Kent p-value'] = fisher_kent_test['p']
-        # this_stats['Is Fisher vs. Kent test'] = fisher_kent_test['testresult']
+            # QMessageBox.critical(
+            #     self, "qAttitude", "ERROR: more than one data point needs to be selected to calculate average values."
+            # )
 
         # finally update plot
         self._update_plot()
@@ -1300,7 +1335,7 @@ class qAttitudeDialog(QDialog):
                 self.means.loc[self.means["cluster"] == cluster, "bg_e1_tr"].to_list(),
                 marker="H",
                 color=color,
-                markersize=12,
+                markersize=10,
                 markeredgecolor="k",
                 zorder=6,
             )
@@ -1317,7 +1352,7 @@ class qAttitudeDialog(QDialog):
                 self.means.loc[self.means["cluster"] == cluster, "bg_e2_tr"].to_list(),
                 marker="s",
                 color=color,
-                markersize=12,
+                markersize=10,
                 markeredgecolor="k",
                 zorder=6,
             )
@@ -1334,7 +1369,7 @@ class qAttitudeDialog(QDialog):
                 self.means.loc[self.means["cluster"] == cluster, "bg_e3_tr"].to_list(),
                 marker="^",
                 color=color,
-                markersize=12,
+                markersize=10,
                 markeredgecolor="k",
                 zorder=6,
             )
