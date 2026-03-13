@@ -1121,8 +1121,13 @@ class qAttitudeDialog(QWidget):
         try:
             self.ax.remove()
             self.ax = self.fig.add_subplot(111, projection="stereonet")
-            self.fig.text(0.5, 0.01, 'gecos-lab/qAttitude © 2026 Andrea Bistacchi',
-              ha='center', fontsize=7)
+            self.fig.text(
+                0.5,
+                0.01,
+                "gecos-lab/qAttitude © 2026 Andrea Bistacchi",
+                ha="center",
+                fontsize=7,
+            )
             self.ax.grid(True, zorder=0, alpha=0.5)
             self.ax.grid(kind="polar", zorder=0, alpha=0.5)
             self.canvas.draw_idle()
@@ -1145,8 +1150,13 @@ class qAttitudeDialog(QWidget):
         try:
             self.ax.remove()
             self.ax = self.fig.add_subplot(111, projection="stereonet")
-            self.fig.text(0.5, 0.01, 'gecos-lab/qAttitude © 2026 Andrea Bistacchi',
-              ha='center', fontsize=7)
+            self.fig.text(
+                0.5,
+                0.01,
+                "gecos-lab/qAttitude © 2026 Andrea Bistacchi",
+                ha="center",
+                fontsize=7,
+            )
             self.ax.grid(True, zorder=0, alpha=0.5)
             self.ax.grid(kind="polar", zorder=0, alpha=0.5)
 
