@@ -902,8 +902,6 @@ class qAttitudeDialog(QWidget):
                 analysis_type=analysis_type,
                 log=self.append_log,
             )
-            # when data are properly loaded, run analysis and plot
-            self._calc_clusters_and_plot()
         except Exception as e:
             self.data = self.data.iloc[0:0]
             self.means = self.means.iloc[0:0]
@@ -912,6 +910,9 @@ class qAttitudeDialog(QWidget):
             QMessageBox.critical(
                 self, "qAttitude", f"Error: {type(e).__name__}: {e}\n\n{tb}"
             )
+
+        # when data are properly loaded, run analysis and plot
+        self._calc_clusters_and_plot()
 
     def _calc_clusters_and_plot(self):
         """Used to calculate kmeans clusters when their number is changed ot seeds are redefined, and finally plot."""
@@ -925,7 +926,6 @@ class qAttitudeDialog(QWidget):
             n = len(self.data)
             if n == 0:
                 self.append_log("No data to cluster.")
-                return
 
             if k > n:
                 self.append_log(
@@ -1119,10 +1119,11 @@ class qAttitudeDialog(QWidget):
     def _plot_empty(self):
         """Used to create an empty plot at startup or when no data are available."""
         try:
-            self.ax.clear()
+            self.ax.remove()
+            self.ax = self.fig.add_subplot(111, projection="stereonet")
             self.ax.grid(True, zorder=0, alpha=0.5)
             self.ax.grid(kind="polar", zorder=0, alpha=0.5)
-            self.canvas.draw()
+            self.canvas.draw_idle()
         except Exception:
             pass
 
@@ -1140,7 +1141,8 @@ class qAttitudeDialog(QWidget):
         plot_gcs = is_planes and plane_mode in (1, 2)
 
         try:
-            self.ax.clear()
+            self.ax.remove()
+            self.ax = self.fig.add_subplot(111, projection="stereonet")
             self.ax.grid(True, zorder=0, alpha=0.5)
             self.ax.grid(kind="polar", zorder=0, alpha=0.5)
 
@@ -1204,7 +1206,7 @@ class qAttitudeDialog(QWidget):
             if self.chk_bingham_gcs.isChecked():
                 self._plot_bingham_gcs()
 
-            self.canvas.draw()
+            self.canvas.draw_idle()
             self.append_log("Plot updated.")
         except Exception as e:
             tb = traceback.format_exc()
@@ -1246,8 +1248,6 @@ class qAttitudeDialog(QWidget):
                     zorder=4,
                 )
 
-        self.append_log("k-means clusters plotted.")
-
     def _plot_kmeans_poles(self):
         """Used to plot k-means cluster poles."""
         cmap = plt.get_cmap("tab10")
@@ -1264,7 +1264,6 @@ class qAttitudeDialog(QWidget):
                 markeredgecolor="k",
                 zorder=6,
             )
-        self.append_log("k-means poles plotted.")
 
     def _plot_kmeans_gcs(self):
         """Used to plot k-means cluster great circles."""
@@ -1284,7 +1283,6 @@ class qAttitudeDialog(QWidget):
                 alpha=1,
                 zorder=5,
             )
-        self.append_log("k-means great circles plotted.")
 
     def _plot_vmf_pl(self):
         """Used to plot Von Mises-Fisher mean."""
@@ -1301,7 +1299,6 @@ class qAttitudeDialog(QWidget):
                 markeredgecolor="k",
                 zorder=6,
             )
-        self.append_log(f"VMF mean poles plotted.")
 
     def _plot_vmf_gcs(self):
         """Used to plot Von Mises-Fisher mean."""
@@ -1322,7 +1319,6 @@ class qAttitudeDialog(QWidget):
                 alpha=1,
                 zorder=5,
             )
-        self.append_log(f"VMF mean great circles plotted.")
 
     def _plot_bingham_1(self):
         """Used to plot Bingham mean."""
@@ -1339,7 +1335,6 @@ class qAttitudeDialog(QWidget):
                 markeredgecolor="k",
                 zorder=6,
             )
-        self.append_log(f"Bingham main axis plotted.")
 
     def _plot_bingham_2(self):
         """Used to plot Bingham mean."""
@@ -1356,7 +1351,6 @@ class qAttitudeDialog(QWidget):
                 markeredgecolor="k",
                 zorder=6,
             )
-        self.append_log(f"Bingham main axis plotted.")
 
     def _plot_bingham_3(self):
         """Used to plot Bingham mean."""
@@ -1373,7 +1367,6 @@ class qAttitudeDialog(QWidget):
                 markeredgecolor="k",
                 zorder=6,
             )
-        self.append_log(f"Bingham main axis plotted.")
 
     def _plot_bingham_gcs(self):
         """Used to plot Bingham mean."""
@@ -1398,4 +1391,3 @@ class qAttitudeDialog(QWidget):
                 alpha=1,
                 zorder=5,
             )
-        self.append_log(f"Bingham main axis plotted.")

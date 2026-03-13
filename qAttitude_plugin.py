@@ -52,7 +52,7 @@ class qAttitudePlugin:
         return action
 
     def initGui(self):
-        icon_path = os.path.join(self.plugin_dir, "icon.svg")
+        icon_path = os.path.join(self.plugin_dir, "icon.png")
         self.add_action(
             icon_path,
             text="qAttitude",
