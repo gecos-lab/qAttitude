@@ -1,11 +1,14 @@
 [general]
 name=qAttitude
 description=Interactive stereonet plotting and orientation analysis (VMF/Bingham/Kent optional), k-medoids (random or click init), tables with copy/paste, save-on-demand.
-version=0.1.0
+version = 0.1.1
 qgisMinimumVersion=3.28
+qgisMaximumVersion = 4.99
+supportsQt6 = True
 author=Andrea Bistacchi @ gecos-lab
 email=andrea.bistacchi@unimib.it
 about=Structural geology stereonet analysis for selected features only.
 category=Analysis
 plugin_dependencies=PackageInstallerQgis
 icon=icon.svg
+changelog = 0.1.1 : Joint Qgis3/Qgis4 compliance - Scan_qt6_compat plugin

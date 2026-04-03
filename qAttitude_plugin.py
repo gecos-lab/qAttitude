@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+from .qt_compat import DOCKAREA_LEFT, DOCKAREA_RIGHT
 # qAttitude @ Andrea Bistacchi 2024-06-26
 
 from qgis.PyQt.QtGui import QIcon
@@ -74,11 +75,11 @@ class qAttitudePlugin:
         if not self.dock_widget:
             self.dock_widget = QDockWidget("qAttitude", self.iface.mainWindow())
             self.dock_widget.setAllowedAreas(
-                Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea
+                DOCKAREA_LEFT | DOCKAREA_RIGHT
             )
             self.dlg = qAttitudeDialog(self.iface, self)
             self.dock_widget.setWidget(self.dlg)
-            self.iface.addDockWidget(Qt.RightDockWidgetArea, self.dock_widget)
+            self.iface.addDockWidget(DOCKAREA_RIGHT, self.dock_widget)
         else:
             if self.dock_widget.isVisible():
                 self.dock_widget.hide()
