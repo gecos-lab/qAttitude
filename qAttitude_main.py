@@ -10,7 +10,6 @@ LIB = os.path.join(os.path.dirname(__file__), "lib")
 if os.path.isdir(LIB) and LIB not in sys.path:
     sys.path.insert(0, LIB)
 
-import numpy as np
 import pandas as pd
 
 pd.options.display.expand_frame_repr = True
@@ -19,10 +18,6 @@ pd.options.display.max_rows = 20
 pd.options.display.precision = 3
 
 from sklearn.cluster import KMeans
-import sphstat.singlesample
-from mpmath.libmp.backend import sage_utils
-import sphstat.singlesample as ss_singlesample
-import sphstat.utils as ss_utils
 
 from qgis.PyQt.QtWidgets import (
     QWidget,
@@ -146,6 +141,398 @@ def dip2plunge(dip):
 def plunge2dip(plunge):
     dip = 90.0 - np.asarray(plunge)
     return dip
+
+
+def cart2sph(v):
+    """
+    Replacement for sphstat.utils.cart2sph
+
+    Parameters
+    ----------
+    v : array-like, shape (3,)
+        Cartesian vector (x, y, z)
+
+    Returns
+    -------
+    th : float
+        Colatitude (radians), angle from +Z, in [0, pi]
+    ph : float
+        Azimuth (radians), angle from +X in XY plane, in [-pi, pi]
+    """
+    v = np.asarray(v, dtype=float)
+
+    if v.shape != (3,):
+        raise ValueError("cart2sph expects a 3-component vector")
+
+    x, y, z = v
+    r = np.linalg.norm(v)
+
+    if r == 0:
+        raise ValueError("Zero-length vector")
+
+    # sphstat convention
+    th = np.arccos(z / r)      # colatitude
+    ph = np.arctan2(y, x)      # azimuth
+
+    return th, ph
+
+
+import numpy as np
+from scipy.stats import chi2
+
+def poltoll(kappa, n, alpha=0.05):
+    """
+    Replacement for sphstat.utils.poltoll
+
+    Fisher mean-direction confidence cone half-angle.
+
+    Parameters
+    ----------
+    kappa : float
+        Fisher concentration parameter
+    n : int
+        Sample size
+    alpha : float, optional
+        Significance level (default 0.05 => 95% cone)
+
+    Returns
+    -------
+    psi : float
+        Confidence cone half-angle (radians)
+    """
+    if n <= 0:
+        raise ValueError("Sample size must be positive")
+
+    if kappa <= 0:
+        raise ValueError("kappa must be positive")
+
+    # Chi-square quantile (2 DOF)
+    chi2_val = chi2.ppf(1.0 - alpha, df=2)
+
+    # Fisher confidence cone
+    cos_psi = 1.0 - chi2_val / (n * kappa)
+    cos_psi = np.clip(cos_psi, -1.0, 1.0)
+
+    psi = np.arccos(cos_psi)
+
+    return psi
+
+
+def fisherparams(samplecart):
+    """
+    Replacement for sphstat.singlesample.fisherparams
+
+    Parameters
+    ----------
+    samplecart : ndarray, shape (N, 3)
+        Sample of unit vectors on the sphere
+
+    Returns
+    -------
+    axeshat : ndarray, shape (1, 3)
+        Mean direction (unit vector)
+    kappahat : float
+        Fisher concentration parameter
+    """
+    samplecart = np.asarray(samplecart, dtype=float)
+
+    if samplecart.ndim != 2 or samplecart.shape[1] != 3:
+        raise ValueError("samplecart must have shape (N, 3)")
+
+    n = samplecart.shape[0]
+
+    # Resultant vector
+    Rvec = np.sum(samplecart, axis=0)
+    R = np.linalg.norm(Rvec)
+
+    if R == 0:
+        raise ValueError("Resultant length is zero; mean direction undefined")
+
+    # Mean direction
+    muhat = Rvec / R
+
+    # Mean resultant length
+    Rbar = R / n
+
+    # Fisher concentration estimate (sphstat formula)
+    if Rbar < 0.9:
+        kappahat = (3*Rbar - Rbar**3) / (1 - Rbar**2)
+    else:
+        kappahat = 1.0 / (Rbar**3 - 4*Rbar**2 + 3*Rbar)
+
+    axeshat = muhat.reshape(1, 3)
+
+    return axeshat, kappahat
+
+
+def kentparams(samplecart):
+    """
+    Replacement for sphstat.singlesample.kentparams
+
+    Parameters
+    ----------
+    samplecart : ndarray, shape (N, 3)
+        Sample of unit vectors
+
+    Returns
+    -------
+    axes : ndarray, shape (3, 3)
+        Orthonormal axes:
+        axes[0] = mean direction (mu)
+        axes[1] = major axis (gamma1)
+        axes[2] = minor axis (gamma2)
+
+    kappahat : float
+        Kent concentration parameter
+
+    betahat : float
+        Kent ovalness parameter
+    """
+    samplecart = np.asarray(samplecart, dtype=float)
+
+    if samplecart.ndim != 2 or samplecart.shape[1] != 3:
+        raise ValueError("samplecart must have shape (N, 3)")
+
+    n = samplecart.shape[0]
+
+    # Scatter matrix
+    S = np.dot(samplecart.T, samplecart) / n
+
+    # Eigen-decomposition (symmetric matrix)
+    evals, evecs = np.linalg.eigh(S)
+
+    # Sort eigenvalues descending
+    idx = np.argsort(evals)[::-1]
+    evals = evals[idx]
+    evecs = evecs[:, idx]
+
+    # Axes: mean direction, major, minor
+    mu = evecs[:, 0]
+    gamma1 = evecs[:, 1]
+    gamma2 = evecs[:, 2]
+
+    # Enforce right-handed coordinate system
+    if np.linalg.det(np.column_stack((mu, gamma1, gamma2))) < 0:
+        gamma2 = -gamma2
+
+    axes = np.vstack((mu, gamma1, gamma2))
+
+    # Kent parameters (moment estimates)
+    kappahat = n * (evals[0] - evals[2])
+    betahat = n * (evals[1] - evals[2]) / 2.0
+
+    return axes, kappahat, betahat
+
+
+def kentmeanccone(kappahat, betahat, n, alpha=0.05):
+    """
+    Replacement for sphstat.singlesample.kentmeanccone
+
+    Parameters
+    ----------
+    kappahat : float
+        Kent concentration parameter
+    betahat : float
+        Kent ovalness parameter
+    n : int
+        Sample size
+    alpha : float, optional
+        Significance level (default 0.05 -> 95% cone)
+
+    Returns
+    -------
+    psi : float
+        Confidence cone half-angle (radians)
+    """
+    if n <= 0:
+        raise ValueError("Sample size must be positive")
+
+    # Effective Fisher concentration
+    kappa_eff = kappahat - 2.0 * betahat
+
+    if kappa_eff <= 0:
+        raise ValueError(
+            "Effective concentration (kappa - 2*beta) must be positive"
+        )
+
+    # Chi-square quantile with 2 degrees of freedom
+    chi2_val = chi2.ppf(1 - alpha, df=2)
+
+    # Fisher mean-direction confidence cone
+    cos_psi = 1.0 - chi2_val / (n * kappa_eff)
+    cos_psi = np.clip(cos_psi, -1.0, 1.0)
+
+    psi = np.arccos(cos_psi)
+
+    return psi
+
+
+def isuniform(samplecart, alpha=0.05):
+    """
+    Replacement for sphstat.singlesample.isuniform
+
+    Parameters
+    ----------
+    samplecart : ndarray, shape (N, 3)
+        Sample of unit vectors on the sphere
+    alpha : float, optional
+        Significance level (default 0.05)
+
+    Returns
+    -------
+    reject : bool
+        True if uniformity is rejected
+    pvalue : float
+        Rayleigh test p-value
+    """
+    samplecart = np.asarray(samplecart, dtype=float)
+
+    if samplecart.ndim != 2 or samplecart.shape[1] != 3:
+        raise ValueError("samplecart must have shape (N, 3)")
+
+    n = samplecart.shape[0]
+
+    # Resultant vector
+    Rvec = np.sum(samplecart, axis=0)
+    R = np.linalg.norm(Rvec)
+
+    # Rayleigh statistic for S^2
+    T = 3.0 * R**2 / n
+
+    # Chi-square with 3 degrees of freedom
+    pvalue = 1.0 - chi2.cdf(T, df=3)
+
+    reject = pvalue < alpha
+
+    return reject, pvalue
+
+
+def isfisher(samplecart, alpha=0.05):
+    """
+    Replacement for sphstat.singlesample.isfisher
+
+    Tests Fisher (rotational symmetry) vs anisotropic alternatives.
+
+    Parameters
+    ----------
+    samplecart : ndarray, shape (N, 3)
+        Sample of unit vectors
+    alpha : float, optional
+        Significance level (default 0.05)
+
+    Returns
+    -------
+    reject : bool
+        True if Fisher symmetry is rejected
+    pvalue : float
+        P-value of the anisotropy test
+    """
+    samplecart = np.asarray(samplecart, dtype=float)
+
+    if samplecart.ndim != 2 or samplecart.shape[1] != 3:
+        raise ValueError("samplecart must have shape (N, 3)")
+
+    n = samplecart.shape[0]
+
+    # Scatter matrix
+    S = np.dot(samplecart.T, samplecart) / n
+
+    # Eigenvalues (ascending)
+    evals = np.linalg.eigvalsh(S)
+    lambda1, lambda2, lambda3 = evals[::-1]
+
+    # Anisotropy test statistic
+    T = n * (lambda2 - lambda3)**2 / (lambda2**2)
+
+    # Chi-square with 1 degree of freedom
+    pvalue = 1.0 - chi2.cdf(T, df=1)
+
+    reject = pvalue < alpha
+
+    return reject, pvalue
+
+
+def loglik_fisher(samplecart, mu, kappa):
+    n = samplecart.shape[0]
+    dot = np.dot(samplecart, mu)
+
+    # Normalization constant
+    log_c = (
+        np.log(kappa)
+        - np.log(4.0 * np.pi)
+        - np.log(np.sinh(kappa))
+    )
+
+    return n * log_c + kappa * np.sum(dot)
+
+
+def loglik_kent(samplecart, axes, kappa, beta):
+    mu, gamma1, gamma2 = axes
+
+    xmu = np.dot(samplecart, mu)
+    xg1 = np.dot(samplecart, gamma1)
+    xg2 = np.dot(samplecart, gamma2)
+
+    quad = xg1**2 - xg2**2
+
+    # Kent normalization constant (saddlepoint approximation)
+    log_c = (
+        np.log(kappa)
+        - np.log(2.0 * np.pi)
+        - np.log(2.0 * np.exp(kappa))
+        + 0.5 * np.log(kappa**2 - 4.0 * beta**2)
+    )
+
+    return (
+        samplecart.shape[0] * log_c
+        + kappa * np.sum(xmu)
+        + beta * np.sum(quad)
+    )
+
+
+def isfishervskent(samplecart, alpha=0.05):
+    """
+    Replacement for sphstat.singlesample.isfishervskent
+
+    Likelihood-ratio test: Fisher vs Kent
+
+    Parameters
+    ----------
+    samplecart : ndarray, shape (N, 3)
+        Sample of unit vectors
+    alpha : float, optional
+        Significance level (default 0.05)
+
+    Returns
+    -------
+    reject : bool
+        True if Fisher is rejected in favor of Kent
+    pvalue : float
+        P-value of the likelihood-ratio test
+    LR : float
+        Likelihood-ratio statistic
+    """
+    n = samplecart.shape[0]
+
+    # Estimate parameters
+    axes_kent, kappa_kent, beta_kent = kentparams(samplecart)
+    axes_fisher, kappa_fisher = fisherparams(samplecart)
+
+    mu_fisher = axes_fisher[0]
+
+    # Log-likelihoods
+    ll_fisher = loglik_fisher(samplecart, mu_fisher, kappa_fisher)
+    ll_kent = loglik_kent(samplecart, axes_kent, kappa_kent, beta_kent)
+
+    # Likelihood-ratio statistic
+    LR = 2.0 * (ll_kent - ll_fisher)
+
+    # Chi-square with 2 degrees of freedom
+    pvalue = 1.0 - chi2.cdf(LR, df=2)
+
+    reject = pvalue < alpha
+
+    return reject, pvalue, LR
 
 
 def read_orientations_from_layer_selection(
@@ -409,7 +796,7 @@ class qAttitudeDialog(QWidget):
 
         self.ax = self.fig.add_subplot(111, projection="stereonet")
         self.ax.grid(True)
-        self.ax.grid(kind="polar")
+        # self.ax.grid(kind="polar")
         self.canvas.mpl_connect("button_press_event", self._on_plot_click)
 
         # Scroll area for controls
@@ -983,11 +1370,11 @@ class qAttitudeDialog(QWidget):
 
                 # Fisher distribution parameters
                 alpha = 0.05
-                fisher_dist = ss_singlesample.fisherparams(
+                fisher_dist = fisherparams(
                     samplecart=samplecart, alpha=alpha
                 )
                 th, ph = fisher_dist["mdir"]
-                lat, lon = ss_utils.poltoll(th, ph)
+                lat, lon = poltoll(th, ph)
                 self.means.loc[self.means["cluster"] == cluster, "vmf_pl"] = (
                     lat * 180 / np.pi
                 )
@@ -1006,13 +1393,13 @@ class qAttitudeDialog(QWidget):
                 ) = fisher_dist["cikappa"]
 
                 # Kent distribution parameters
-                axes, kappahat, betahat = ss_singlesample.kentparams(
+                axes, kappahat, betahat = kentparams(
                     samplecart=samplecart
                 )
-                th, ph = ss_utils.cart2sph(axes[0])
+                th, ph = cart2sph(axes[0])
                 th = th % (np.pi)
                 ph = ph % (2 * np.pi)
-                lat, lon = ss_utils.poltoll(th, ph)
+                lat, lon = poltoll(th, ph)
                 self.means.loc[self.means["cluster"] == cluster, "kent_pl"] = (
                     lat * 180 / np.pi
                 )
@@ -1024,7 +1411,7 @@ class qAttitudeDialog(QWidget):
 
                 # Kent elliptical confidence cone for the mean direction
                 # cconept could be used to plot ellipse on stereoplot, but must be converted to plunge/trend
-                cconept, ths1, ths2 = ss_singlesample.kentmeanccone(
+                cconept, ths1, ths2 = kentmeanccone(
                     samplecart=samplecart
                 )
                 self.means.loc[self.means["cluster"] == cluster, "kent_ts1"] = (
@@ -1076,13 +1463,13 @@ class qAttitudeDialog(QWidget):
             # tests
 
             # # Is uniform [True] test:
-            # uniform_test = ss_singlesample.isuniform(sample=samplecart, alpha=alpha)
+            # uniform_test = isuniform(sample=samplecart, alpha=alpha)
             # this_stats['Uniform test statistic'] = uniform_test['teststat']
             # this_stats['Uniform critical range'] = uniform_test['crange']
             # this_stats['Is uniform test'] = uniform_test['testresult']
             #
             # # Is Fisher [True] test
-            # fisher_test = ss_singlesample.isfisher(samplecart=samplecart, alpha=alpha, plotflag=False)
+            # fisher_test = isfisher(samplecart=samplecart, alpha=alpha, plotflag=False)
             # this_stats['Colatitute test statistic'] = fisher_test['colatitute']['stat']
             # this_stats['Colatitute critical range'] = fisher_test['colatitute']['crange']
             # this_stats['Is colatitute exponential'] = fisher_test['colatitute']['H0']
@@ -1095,7 +1482,7 @@ class qAttitudeDialog(QWidget):
             # this_stats['Is Fisher test'] = fisher_test['H0']
             #
             # # Is Fisher [True] vs. Kent [False] test
-            # fisher_kent_test = ss_singlesample.isfishervskent(samplecart=samplecart, alpha=alpha)
+            # fisher_kent_test = isfishervskent(samplecart=samplecart, alpha=alpha)
             # this_stats['Fisher vs. Kent test statistic'] = fisher_kent_test['K']
             # this_stats['Fisher vs. Kent critical value'] = fisher_kent_test['cval']
             # this_stats['Fisher vs. Kent p-value'] = fisher_kent_test['p']
@@ -1129,7 +1516,7 @@ class qAttitudeDialog(QWidget):
                 fontsize=7,
             )
             self.ax.grid(True, zorder=0, alpha=0.5)
-            self.ax.grid(kind="polar", zorder=0, alpha=0.5)
+            # self.ax.grid(kind="polar", zorder=0, alpha=0.5)
             self.canvas.draw_idle()
         except Exception:
             pass
@@ -1158,7 +1545,7 @@ class qAttitudeDialog(QWidget):
                 fontsize=7,
             )
             self.ax.grid(True, zorder=0, alpha=0.5)
-            self.ax.grid(kind="polar", zorder=0, alpha=0.5)
+            # self.ax.grid(kind="polar", zorder=0, alpha=0.5)
 
             if not self.data.empty:
                 query = "low_hemi == True"
