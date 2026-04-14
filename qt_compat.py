@@ -133,7 +133,7 @@ except AttributeError:
 
 
 # ---------------------------------------------------------
-# QFont style
+# QFont style and hints
 # ---------------------------------------------------------
 QFont = QtGui.QFont
 if hasattr(QFont, "Style"):
@@ -150,6 +150,17 @@ else:
 
     FONTSTYLE_MIXED = getattr(QFont, "StyleMixed", None)
     FONTSTYLE_ANY = getattr(QFont, "StyleAny", None)
+
+if hasattr(QFont, "StyleHint"):
+    FONTHINT_MONOSPACE = QFont.StyleHint.Monospace
+    FONTHINT_SERIF = QFont.StyleHint.Serif
+    FONTHINT_SANS_SERIF = QFont.StyleHint.SansSerif
+    FONTHINT_TYPEWRITER = QFont.StyleHint.TypeWriter
+else:
+    FONTHINT_MONOSPACE = getattr(QFont, "Monospace", None)
+    FONTHINT_SERIF = getattr(QFont, "Serif", None)
+    FONTHINT_SANS_SERIF = getattr(QFont, "SansSerif", None)
+    FONTHINT_TYPEWRITER = getattr(QFont, "TypeWriter", None)
 
 
 # ---------------------------------------------------------
@@ -637,6 +648,7 @@ if hasattr(QEvent, "Type"):
 
     EVENT_KEY_PRESS = QEvent.Type.KeyPress
     EVENT_KEY_RELEASE = QEvent.Type.KeyRelease
+    EVENT_WHEEL = QEvent.Type.Wheel
 
     EVENT_LANGUAGE_CHANGE = QEvent.Type.LanguageChange
     EVENT_ENABLED_CHANGE = QEvent.Type.EnabledChange
@@ -658,6 +670,7 @@ else:
 
     EVENT_KEY_PRESS = QEvent.KeyPress
     EVENT_KEY_RELEASE = QEvent.KeyRelease
+    EVENT_WHEEL = QEvent.Wheel
 
     EVENT_LANGUAGE_CHANGE = QEvent.LanguageChange
     EVENT_ENABLED_CHANGE = QEvent.EnabledChange
@@ -756,6 +769,17 @@ else:
     MSGBOX_ACCEPT_ROLE = QMessageBox.AcceptRole
     MSGBOX_ACTION_ROLE = QMessageBox.ActionRole
     MSGBOX_REJECT_ROLE = QMessageBox.RejectRole
+
+# ---------------------------------------------------------
+# QPlainTextEdit line wrap modes
+# ---------------------------------------------------------
+QPlainTextEdit = QtWidgets.QPlainTextEdit
+if hasattr(QPlainTextEdit, "LineWrapMode"):
+    PLAINTEXT_NOWRAP = QPlainTextEdit.LineWrapMode.NoWrap
+    PLAINTEXT_WIDGETWIDTH = QPlainTextEdit.LineWrapMode.WidgetWidth
+else:
+    PLAINTEXT_NOWRAP = QPlainTextEdit.NoWrap
+    PLAINTEXT_WIDGETWIDTH = QPlainTextEdit.WidgetWidth
 
 
 # ---------------------------------------------------------
@@ -1395,6 +1419,20 @@ try:
 except AttributeError:
     WA_DELETE_ON_CLOSE = Qt.WA_DeleteOnClose
 
+# ---------------------------------------------------------
+# Drop actions
+# ---------------------------------------------------------
+if hasattr(Qt, "DropAction"):
+    COPY_ACTION = Qt.DropAction.CopyAction
+    MOVE_ACTION = Qt.DropAction.MoveAction
+    LINK_ACTION = Qt.DropAction.LinkAction
+    IGNORE_ACTION = Qt.DropAction.IgnoreAction
+else:
+    COPY_ACTION = Qt.CopyAction
+    MOVE_ACTION = Qt.MoveAction
+    LINK_ACTION = Qt.LinkAction
+    IGNORE_ACTION = Qt.IgnoreAction
+
 
 # ---------------------------------------------------------
 # Application attributes (High DPI)
@@ -1993,7 +2031,7 @@ __all__ = [
 
     "EVENT_CLOSE", "EVENT_SHOW", "EVENT_HIDE", "EVENT_RESIZE", "EVENT_MOVE",
     "EVENT_MOUSE_BUTTON_PRESS", "EVENT_MOUSE_BUTTON_RELEASE",
-    "EVENT_MOUSE_MOVE", "EVENT_KEY_PRESS", "EVENT_KEY_RELEASE",
+    "EVENT_MOUSE_MOVE", "EVENT_KEY_PRESS", "EVENT_KEY_RELEASE", "EVENT_WHEEL",
     "EVENT_LANGUAGE_CHANGE", "EVENT_ENABLED_CHANGE", "EVENT_WINDOW_STATE_CHANGE",
 
     "EVENT_FOCUS_IN", "EVENT_FOCUS_OUT",
@@ -2018,6 +2056,10 @@ __all__ = [
     "SIZEPOLICY_FIXED", "SIZEPOLICY_MINIMUM", "SIZEPOLICY_MAXIMUM",
     "SIZEPOLICY_PREFERRED", "SIZEPOLICY_EXPANDING",
     "SIZEPOLICY_MINIMUM_EXPANDING", "SIZEPOLICY_IGNORED",
+
+    "FONTHINT_MONOSPACE", "FONTHINT_SERIF", "FONTHINT_SANS_SERIF", "FONTHINT_TYPEWRITER",
+
+    "COPY_ACTION", "MOVE_ACTION", "LINK_ACTION", "IGNORE_ACTION",
 
     "FONTSTYLE_NORMAL",
     "FONTSTYLE_ITALIC",
@@ -2108,6 +2150,8 @@ __all__ = [
     "COMBO_NO_INSERT",
 
     "DIALOG_ACCEPTED", "DIALOG_REJECTED",
+
+    "PLAINTEXT_NOWRAP", "PLAINTEXT_WIDGETWIDTH",
 
     "QNETWORK_REPLY", "QNETWORK_REQUEST", "QNETWORK_ACCESS_MANAGER",
 

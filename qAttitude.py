@@ -41,7 +41,7 @@ from qgis.core import (
     Qgis,
 )
 
-from .qt_compat import DOCKAREA_LEFT, DOCKAREA_RIGHT
+from .qt_compat import DOCKAREA_LEFT, DOCKAREA_RIGHT, EVENT_WHEEL, PLAINTEXT_NOWRAP, FONTHINT_MONOSPACE, COPY_ACTION
 
 import matplotlib
 
@@ -50,8 +50,25 @@ import matplotlib.pyplot as plt
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 
-import mplstereonet
-from mplstereonet import stereonet_math
+# Handle mplstereonet deprecation warnings in Matplotlib 3.6+
+import warnings
+with warnings.catch_warnings():
+    warnings.filterwarnings("ignore", category=PendingDeprecationWarning, module="mplstereonet")
+    # In newer matplotlib version, this might be a MatplotlibDeprecationWarning
+    try:
+        from matplotlib import MatplotlibDeprecationWarning
+        warnings.filterwarnings("ignore", category=MatplotlibDeprecationWarning, module="mplstereonet")
+    except ImportError:
+        pass
+    import mplstereonet
+    from mplstereonet import stereonet_math
+
+# Fix for Matplotlib 3.6+ which deprecated Axes.cla in favor of Axes.clear
+# and causes mplstereonet to fail or warn.
+if hasattr(mplstereonet.StereonetAxes, 'cla') and not hasattr(mplstereonet.StereonetAxes, 'clear'):
+    mplstereonet.StereonetAxes.clear = mplstereonet.StereonetAxes.cla
+elif hasattr(mplstereonet.StereonetAxes, 'clear') and not hasattr(mplstereonet.StereonetAxes, 'cla'):
+    mplstereonet.StereonetAxes.cla = mplstereonet.StereonetAxes.clear
 
 
 # ================= useful functions =================
@@ -657,14 +674,14 @@ class LayerDropGroupBox(QGroupBox):
 
     def dragEnterEvent(self, event):
         if QgsMimeDataUtils.isUriList(event.mimeData()):
-            event.setDropAction(Qt.CopyAction)
+            event.setDropAction(COPY_ACTION)
             event.accept()
         else:
             event.ignore()
 
     def dragMoveEvent(self, event):
         if QgsMimeDataUtils.isUriList(event.mimeData()):
-            event.setDropAction(Qt.CopyAction)
+            event.setDropAction(COPY_ACTION)
             event.accept()
         else:
             event.ignore()
@@ -684,7 +701,7 @@ class LayerDropGroupBox(QGroupBox):
             layer = QgsProject.instance().mapLayer(layer_id)
             if layer is not None and layer.type() == QgsMapLayer.VectorLayer:
                 self.layerDropped.emit(layer)
-                event.setDropAction(Qt.CopyAction)
+                event.setDropAction(COPY_ACTION)
                 event.accept()
                 return
 
@@ -761,7 +778,7 @@ class qAttitudeDialog(QWidget):
     # ================= GUI methods =================
 
     def eventFilter(self, source, event):
-        if event.type() == QEvent.Wheel and (
+        if event.type() == EVENT_WHEEL and (
             isinstance(source, QComboBox) or isinstance(source, QSpinBox)
         ):
             return True
@@ -1044,9 +1061,9 @@ class qAttitudeDialog(QWidget):
         gridlog = QGridLayout(g_log)
 
         self.log_output = QPlainTextEdit(self)
-        self.log_output.setLineWrapMode(QPlainTextEdit.NoWrap)
+        self.log_output.setLineWrapMode(PLAINTEXT_NOWRAP)
         font = QFont("Courier")
-        font.setStyleHint(QFont.Monospace)
+        font.setStyleHint(FONTHINT_MONOSPACE)
         font.setPointSize(9)
         self.log_output.setFont(font)
         self.log_output.setReadOnly(True)
