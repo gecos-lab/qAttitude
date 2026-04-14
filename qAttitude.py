@@ -906,6 +906,9 @@ class qAttitudeDialog(QWidget):
         gridk.addWidget(self.init_random, 1, 0)
         gridk.addWidget(self.init_pick, 1, 1)
 
+        self.init_random.toggled.connect(self._calc_clusters_and_plot)
+        self.init_pick.toggled.connect(self._calc_clusters_and_plot)
+
         gridk.addWidget(QLabel("Random seed:"), 2, 0)
         self.seed_spin = QSpinBox()
         self.seed_spin.installEventFilter(self)
@@ -915,7 +918,7 @@ class qAttitudeDialog(QWidget):
 
         self.btn_pick = QPushButton("Pick seeds")
         self.btn_clear_picks = QPushButton("Clear picks")
-        self.lbl_picks = QLabel("Picked: 0")
+        self.lbl_picks = QLabel("Picked: 0 / 1")
         gridk.addWidget(self.btn_pick, 3, 0)
         gridk.addWidget(self.btn_clear_picks, 3, 1)
         gridk.addWidget(self.lbl_picks, 4, 0, 1, 2)
@@ -1042,7 +1045,8 @@ class qAttitudeDialog(QWidget):
         gridp.addWidget(self.contour_cmap_combo, 12, 1)
 
         # connect signals
-        self.k_spin.valueChanged.connect(self._calc_clusters_and_plot)
+        self.k_spin.valueChanged.connect(self._on_k_changed)
+        self.seed_spin.valueChanged.connect(self._calc_clusters_and_plot)
         self.chk_individual.stateChanged.connect(self._update_plot)
         self.plane_mode_combo.currentIndexChanged.connect(self._update_plot)
         self.chk_contours.stateChanged.connect(self._update_plot)
@@ -1258,13 +1262,15 @@ class qAttitudeDialog(QWidget):
             return
         self._picking_enabled = not self._picking_enabled
         self.btn_pick.setText(
-            "Picking: ON" if self._picking_enabled else "Pick medoid seeds"
+            "Picking: ON" if self._picking_enabled else "Pick seeds"
         )
 
     def _clear_picks(self):
         """Used to clear kmedoids seeds."""
         self._picked_medoid_indices = []
-        self.lbl_picks.setText("Picked: 0")
+        k = int(self.k_spin.value())
+        self.lbl_picks.setText(f"Picked: 0 / {k}")
+        self._calc_clusters_and_plot()
 
     def _on_plot_click(self, event):
         """Used for picking of kmedoids seeds."""
@@ -1290,7 +1296,8 @@ class qAttitudeDialog(QWidget):
         self.lbl_picks.setText(f"Picked: {len(self._picked_medoid_indices)} / {k}")
         if len(self._picked_medoid_indices) == k:
             self._picking_enabled = False
-            self.btn_pick.setText("Pick medoid seeds")
+            self.btn_pick.setText("Pick seeds")
+            self._calc_clusters_and_plot()
 
     def append_log(self, message: str):
         self.log_output.appendPlainText(str(message))
@@ -1380,6 +1387,11 @@ class qAttitudeDialog(QWidget):
 
     # ================= PROCESSING AND ANALYSIS methods =================
 
+    def _on_k_changed(self):
+        """Handle number of clusters change."""
+        self._clear_picks()
+        # _clear_picks calls _calc_clusters_and_plot
+
     def _load_data_calc_and_plot(self):
         """Main method to load data, calculate means, depending on the number of
         clusters and axial/polar, and finally plot."""
@@ -1440,22 +1452,66 @@ class qAttitudeDialog(QWidget):
                 self._update_plot()
                 return  # Exit early if no data
 
-            if k > n:
+            if n < n_clusters:
                 self.append_log(
-                    f"Number of clusters ({k}) is greater than the number of data points ({n}). "
-                    f"Reducing number of clusters to {n}."
+                    f"Number of clusters ({n_clusters}) is greater than the number of data points ({n}). "
+                    f"Reducing number of clusters."
                 )
-                k = n
-                n_clusters = k * 2 if analysis_type == "axial" else k
+                if analysis_type == "axial":
+                    k = n // 2
+                    if k < 1:
+                        k = 1
+                    n_clusters = k * 2
+                else:
+                    k = n
+                    n_clusters = k
+
                 self.k_spin.blockSignals(True)
                 self.k_spin.setValue(k)
                 self.k_spin.blockSignals(False)
 
+                if n < n_clusters:
+                    self.append_log(
+                        f"WARNING: Still not enough data points ({n}) for the minimum number of "
+                        f"clusters ({n_clusters}). Clustering cannot be performed."
+                    )
+                    self.means = self.means.iloc[0:0]
+                    self._update_plot()
+                    return
+
             vectors = self.data[["l", "m", "n"]].values
+            
+            # Initialization method
+            if self.init_pick.isChecked():
+                if len(self._picked_medoid_indices) < k:
+                    self.append_log(f"Picking enabled but only {len(self._picked_medoid_indices)}/{k} seeds picked. Using k-means++ instead.")
+                    init_method = "k-means++"
+                    n_init = "auto"
+                else:
+                    # Extract vectors for picked indices
+                    # Note: self.data is already doubled in axial mode, but _on_plot_click picks from _last_projected
+                    # which corresponds to the first len(data)//2 points (low_hemi=True)
+                    picked_indices = self._picked_medoid_indices[:k]
+                    init_vectors = vectors[picked_indices]
+                    
+                    if analysis_type == "axial":
+                        # In axial mode, we need 2k initial centers.
+                        # For each picked point, we add its antipodal point.
+                        antipodal_vectors = -init_vectors
+                        init_method = np.vstack([init_vectors, antipodal_vectors])
+                    else:
+                        init_method = init_vectors
+                    
+                    n_init = 1
+                    self.append_log(f"Using {len(init_method)} picked seeds for initialization.")
+            else:
+                init_method = "k-means++"
+                n_init = "auto"
+
             kmeans_model = KMeans(
                 n_clusters=n_clusters,
-                init="k-means++",
-                n_init="auto",
+                init=init_method,
+                n_init=n_init,
                 max_iter=100,
                 tol=0.0001,
                 verbose=0,
@@ -1737,11 +1793,11 @@ class qAttitudeDialog(QWidget):
             self.append_log(
                 f"ERROR during cluster calculation: {type(e).__name__}: {e}\n{tb}"
             )
-            QMessageBox.critical(
-                self,
-                "qAttitude",
-                f"Error during cluster calculation: {type(e).__name__}: {e}\n\n{tb}",
-            )
+            # QMessageBox.critical(
+            #     self,
+            #     "qAttitude",
+            #     f"Error during cluster calculation: {type(e).__name__}: {e}\n\n{tb}",
+            # )
 
         # finally update plot
         self._update_plot()
