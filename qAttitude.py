@@ -1372,6 +1372,119 @@ class qAttitudeDialog(QWidget):
             self.means["k_pl"] = k_plunges
 
             if analysis_type == "axial":
+                # Axial symmetry verification and Pairing
+                low_hemi_means = self.means[self.means["low_hemi"] == True].copy()
+                upper_hemi_means = self.means[self.means["low_hemi"] == False].copy()
+
+                # Add a column for the symmetric cluster ID
+                self.means["symmetric_cluster"] = -1
+
+                if not upper_hemi_means.empty and not low_hemi_means.empty:
+                    self.append_log("--- Axial Symmetry Verification (Lower vs Upper) ---")
+
+                    # (1) Check if the number of clusters in upper and lower hemisphere is the same
+                    if len(low_hemi_means) != len(upper_hemi_means):
+                        self.append_log(
+                            f"WARNING: Clustering significance failed! Number of clusters in "
+                            f"lower ({len(low_hemi_means)}) and upper ({len(upper_hemi_means)}) "
+                            f"hemispheres are different."
+                        )
+                        self.data["cluster"] = 0
+                        self.means = self.means.iloc[0:0]
+                        self._update_plot()
+                        return
+
+                    # We want to match each lower hemisphere cluster to an upper hemisphere one.
+                    # We compute all possible pairings and select those that maximize the angle (closest to 180).
+                    all_pairings = []
+                    for _, low_row in low_hemi_means.iterrows():
+                        l_low, m_low, n_low = trend_plunge_to_lmn(
+                            low_row["k_tr"], low_row["k_pl"]
+                        )
+                        v_low = np.array([l_low, m_low, n_low])
+
+                        for _, up_row in upper_hemi_means.iterrows():
+                            l_up, m_up, n_up = trend_plunge_to_lmn(
+                                up_row["k_tr"], up_row["k_pl"]
+                            )
+                            v_up = np.array([l_up, m_up, n_up])
+
+                            # Angle between v_low and -v_up (should be close to 180 in axial mode, as v_up is already the opposite of the upper hemisphere center)
+                            cos_angle = np.clip(np.dot(v_low, -v_up), -1.0, 1.0)
+                            angle = np.degrees(np.arccos(cos_angle))
+                            self.append_log(f"Testing Pair: Low {low_row['cluster']} - Up {up_row['cluster']} | Angular Distance from symmetry: {angle:.4f}°")
+                            all_pairings.append({
+                                "low_id": low_row["cluster"],
+                                "up_id": up_row["cluster"],
+                                "angle": angle,
+                                "n_data_low": low_row["n_data"],
+                                "n_data_up": up_row["n_data"]
+                            })
+
+                    # Sort pairings by angle descending (closest to 180 first)
+                    all_pairings.sort(key=lambda x: x["angle"], reverse=True)
+
+                    matched_low = set()
+                    matched_up = set()
+                    
+                    total_data_points = len(self.data)
+
+                    for pairing in all_pairings:
+                        if pairing["low_id"] not in matched_low and pairing["up_id"] not in matched_up:
+                            low_id = pairing["low_id"]
+                            up_id = pairing["up_id"]
+                            angle = pairing["angle"]
+                            delta_data_in_pair = abs(pairing["n_data_low"] - pairing["n_data_up"])
+
+                            # (2) The angular distance must not exceed 2 degrees within any cluster pair
+                            if angle < 178.0:
+                                self.append_log(
+                                    f"WARNING: Clustering significance failed! Angular distance from symmetry "
+                                    f"between Cluster {low_id} and {up_id} is {angle:.2f}°, "
+                                    f"which is less than 178° (more than 2° deviation)."
+                                )
+                                self.data["cluster"] = 0
+                                self.means = self.means.iloc[0:0]
+                                self._update_plot()
+                                return
+
+                            # (3) the number of data points n_data assigned to one cluster and its symmetric must not exceed 2% of the number of data points len(self.data)
+                            if delta_data_in_pair > (0.02 * total_data_points):
+                                self.append_log(
+                                    f"WARNING: Clustering significance failed! Cluster pair {low_id}-{up_id} "
+                                    f"has {delta_data_in_pair} data points ({delta_data_in_pair/total_data_points*100:.2f}%), "
+                                    f"which exceeds 2% of total data ({total_data_points})."
+                                )
+                                self.data["cluster"] = 0
+                                self.means = self.means.iloc[0:0]
+                                self._update_plot()
+                                return
+
+                            self.means.loc[self.means["cluster"] == low_id, "symmetric_cluster"] = int(up_id)
+                            self.means.loc[self.means["cluster"] == up_id, "symmetric_cluster"] = int(low_id)
+
+                            matched_low.add(low_id)
+                            matched_up.add(up_id)
+
+                            self.append_log(
+                                f"Cluster {low_id} (Low) matched with Cluster {up_id} (Up): "
+                                f"Angular Distance from symmetry: {angle:.4f}° | Data points: {delta_data_in_pair}"
+                            )
+                    self.append_log("----------------------------------------------------")
+                else:
+                    # If either is empty, but we are in axial mode, it's a failure of symmetry
+                    self.append_log("WARNING: Clustering significance failed! No clusters found in one of the hemispheres.")
+                    self.data["cluster"] = 0
+                    self.means = self.means.iloc[0:0]
+                    self._update_plot()
+                    return
+
+                # (4) Log all means before dropping the upper hemisphere
+                self.append_log(
+                    f"Full means dataframe (Before Dropping Upper Hemisphere):\n{self.means.to_string(index=False, float_format=lambda x: f'{x:.2f}' if pd.notna(x) else 'NaN')}"
+                )
+
+                # (5) drop the upper hemisphere
                 self.means = self.means.loc[self.means["low_hemi"] == True].reset_index(
                     drop=True
                 )
@@ -1640,7 +1753,19 @@ class qAttitudeDialog(QWidget):
         cmap = plt.get_cmap("tab10")
 
         for cluster in self.means["cluster"]:
-            cluster_data = self.data[self.data["cluster"] == cluster]
+            # In axial mode, we want to include points from both the cluster and its symmetric counterpart
+            is_axial = self.analysis_axial.isChecked()
+            symmetric_id = -1
+            if is_axial:
+                symmetric_ids = self.means.loc[self.means["cluster"] == cluster, "symmetric_cluster"].values
+                if len(symmetric_ids) > 0:
+                    symmetric_id = symmetric_ids[0]
+
+            if is_axial and symmetric_id != -1:
+                cluster_data = self.data[self.data["cluster"].isin([cluster, symmetric_id])]
+            else:
+                cluster_data = self.data[self.data["cluster"] == cluster]
+
             query_data = cluster_data[cluster_data["low_hemi"]]
             color = cmap(cluster % 10)
 
