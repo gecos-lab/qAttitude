@@ -10,7 +10,7 @@ To run, just drag and drop a layer with orientation data, then if necessary adju
 
 Different standard mean orientation statistics (Von Mises-Fisher, Kent, Bingham) are calculated and shown in the log window in the lower part of the plugin panel, and can be turned on or off in the plot with checkboxes.
 
-K-means clustring can be performed changing the number of clusters (selecting just 1 cluster means "no clustering"). For many statistical and numerical reasons, clustering can fail for specific numbers of clusters, and in this case a warning is shown in the log and no cluster data is plotted. Cluster labels can be transferred back to the data layer to freeze the analysis results and define different structural domains. Mqanually picking cluster centers is not yet active.
+K-means clustring can be performed changing the number of clusters (selecting just 1 cluster means "no clustering"), optionally picking with mouse clicks the cluster seed points. For many statistical and numerical reasons, clustering can fail for specific numbers of clusters, and in this case a warning is shown in the log and no cluster data is plotted. Cluster labels can be transferred back to the data layer to freeze the analysis results and define different structural domains.
 
 Test data and a simple QGis project are provided in the test_data folder.
 
