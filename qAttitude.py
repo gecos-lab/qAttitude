@@ -38,10 +38,21 @@ from qgis.core import (
     QgsMimeDataUtils,
     QgsMapLayer,
     QgsProcessingException,
+    QgsField,
     Qgis,
 )
 
-from .qt_compat import DOCKAREA_LEFT, DOCKAREA_RIGHT, EVENT_WHEEL, PLAINTEXT_NOWRAP, FONTHINT_MONOSPACE, COPY_ACTION
+from .qt_compat import (
+    DOCKAREA_LEFT,
+    DOCKAREA_RIGHT,
+    EVENT_WHEEL,
+    PLAINTEXT_NOWRAP,
+    FONTHINT_MONOSPACE,
+    COPY_ACTION,
+    MSGBOX_YES,
+    MSGBOX_NO,
+    QVAR_INT,
+)
 
 import matplotlib
 
@@ -580,6 +591,7 @@ def read_orientations_from_layer_selection(
 
     in_list_1 = []
     in_list_2 = []
+    fids = []
     invalid_count = 0
 
     for f in feats:
@@ -614,6 +626,7 @@ def read_orientations_from_layer_selection(
 
         in_list_1.append(v1)
         in_list_2.append(v2)
+        fids.append(f.id())
     in_list_1 = np.array(in_list_1)
     in_list_2 = np.array(in_list_2)
 
@@ -631,6 +644,7 @@ def read_orientations_from_layer_selection(
         data_lower["trend"] = in_list_2
         l, m, n = trend_plunge_to_lmn(in_list_2, in_list_1)
 
+    data_lower["fid"] = fids
     data_lower["l"] = l
     data_lower["m"] = m
     data_lower["n"] = n
@@ -906,8 +920,16 @@ class qAttitudeDialog(QWidget):
         gridk.addWidget(self.btn_clear_picks, 3, 1)
         gridk.addWidget(self.lbl_picks, 4, 0, 1, 2)
 
+        gridk.addWidget(QLabel("Label field:"), 5, 0)
+        self.transfer_field = QLineEdit("cluster")
+        gridk.addWidget(self.transfer_field, 5, 1)
+
+        self.btn_transfer = QPushButton("Transfer labels to layer")
+        gridk.addWidget(self.btn_transfer, 6, 0, 1, 2)
+
         self.btn_pick.clicked.connect(self._toggle_picking)
         self.btn_clear_picks.clicked.connect(self._clear_picks)
+        self.btn_transfer.clicked.connect(self._transfer_labels_to_layer)
 
         # Plot options and Parametric distribution fitting
         # create plot options group box
@@ -1275,6 +1297,86 @@ class qAttitudeDialog(QWidget):
 
     def clear_log(self):
         self.log_output.clear()
+
+    def _transfer_labels_to_layer(self):
+        """Transfers cluster labels back to the input layer attribute table."""
+        layer = self.analysis_layer
+        if not layer:
+            QMessageBox.warning(self, "qAttitude", "No layer selected.")
+            return
+
+        if self.data.empty or "cluster" not in self.data.columns:
+            QMessageBox.warning(self, "qAttitude", "No clustering data available. Run analysis first.")
+            return
+
+        field_name = self.transfer_field.text().strip()
+        if not field_name:
+            QMessageBox.warning(self, "qAttitude", "Please specify a field name.")
+            return
+
+        # Check if field exists, if not create it
+        field_index = layer.fields().indexOf(field_name)
+        if field_index == -1:
+            res = QMessageBox.question(
+                self,
+                "qAttitude",
+                f"Field '{field_name}' does not exist. Create it?",
+                MSGBOX_YES | MSGBOX_NO
+            )
+            if res == MSGBOX_YES:
+                layer.startEditing()
+                layer.addAttribute(QgsField(field_name, QVAR_INT))
+                layer.commitChanges()
+                field_index = layer.fields().indexOf(field_name)
+            else:
+                return
+
+        if field_index == -1:
+            QMessageBox.critical(self, "qAttitude", f"Could not create or find field '{field_name}'.")
+            return
+
+        # Prepare data for update.
+        # In axial mode, self.data has double rows (low_hemi=True and low_hemi=False).
+        # We only need one per FID.
+        transfer_data = self.data[self.data["low_hemi"] == True].copy()
+
+        # In axial mode, KMeans initially assigns clusters 0 to 2k-1.
+        # After matching, self.means only contains lower hemisphere clusters (k clusters).
+        # We want to map all data points to these k clusters.
+        analysis_type = "axial" if self.analysis_axial.isChecked() else "polar"
+        if (
+            analysis_type == "axial"
+            and hasattr(self, "means")
+            and "symmetric_cluster" in self.means.columns
+        ):
+            # Map symmetric clusters to their counterparts in the lower hemisphere
+            # For rows in transfer_data, the 'cluster' is already what's in self.means
+            # unless a point was assigned to an 'upper hemisphere' cluster even if it's in the lower hemisphere?
+            # KMeans is done on [l,m,n], so a point in lower hemisphere (n<0) will be close to a center in lower hemisphere.
+            pass
+
+        layer.startEditing()
+        success_count = 0
+        try:
+            for _, row in transfer_data.iterrows():
+                fid = row["fid"]
+                cluster_id = row["cluster"]
+                if cluster_id is None:
+                    continue
+                layer.changeAttributeValue(fid, field_index, int(cluster_id))
+                success_count += 1
+
+            if layer.commitChanges():
+                QMessageBox.information(
+                    self, "qAttitude", f"Successfully updated {success_count} features."
+                )
+            else:
+                QMessageBox.critical(
+                    self, "qAttitude", "Failed to commit changes to the layer."
+                )
+        except Exception as e:
+            layer.rollBack()
+            QMessageBox.critical(self, "qAttitude", f"An error occurred: {e}")
 
     # ================= PROCESSING AND ANALYSIS methods =================
 

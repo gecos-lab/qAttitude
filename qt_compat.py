@@ -12,7 +12,7 @@ Objectifs :
 from __future__ import annotations
 
 from qgis.PyQt import QtCore, QtGui, QtWidgets
-from qgis.PyQt.QtCore import Qt
+from qgis.PyQt.QtCore import Qt, QVariant
 from qgis.PyQt.QtGui import QPalette
 from qgis.PyQt.QtWidgets import QComboBox
 from qgis.PyQt.QtNetwork import QNetworkReply, QNetworkRequest, QNetworkAccessManager
@@ -26,6 +26,20 @@ IS_WINDOWS = platform.system().lower() == "windows"
 # ---------------------------------------------------------
 IS_QT6 = hasattr(Qt, "AlignmentFlag")
 IS_QT5 = not IS_QT6
+
+
+# ---------------------------------------------------------
+# QVariant Types
+# ---------------------------------------------------------
+if IS_QT6:
+    from qgis.PyQt.QtCore import QMetaType
+    QVAR_INT = QMetaType.Type.Int
+    QVAR_DOUBLE = QMetaType.Type.Double
+    QVAR_STRING = QMetaType.Type.QString
+else:
+    QVAR_INT = QVariant.Int
+    QVAR_DOUBLE = QVariant.Double
+    QVAR_STRING = QVariant.String
 
 
 # ---------------------------------------------------------
