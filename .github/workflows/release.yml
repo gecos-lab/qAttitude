@@ -1,0 +1,48 @@
+name: CI/CD Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch: # Allows manual triggering from GitHub UI
+
+jobs:
+  test: # Run tests first to ensure the release is healthy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Run Tests in QGIS Docker
+        run: |
+          docker run --rm -v $(pwd):/tests -w /tests qgis/qgis:latest \
+            sh -c "export PYTHONPATH=$PYTHONPATH:/tests && python3 -m unittest discover tests"
+
+  release:
+    needs: test # Only run release if test job succeeds
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: pip install qgis-plugin-ci
+
+      - name: Package and Release
+        run: |
+          # Use github.ref_name for tags, or a fallback for manual dispatch
+          TAG_NAME=${{ github.ref_name }}
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+             TAG_NAME=$(grep "version" metadata.txt | cut -d'=' -f2 | tr -d ' ')
+             TAG_NAME="v${TAG_NAME}"
+          fi
+          
+          qgis-plugin-ci release $TAG_NAME \
+            --github-token ${{ secrets.GITHUB_TOKEN }} \
+            --osgeo-username ${{ secrets.OSGEO_USERNAME }} \
+            --osgeo-password ${{ secrets.OSGEO_PASSWORD }}
