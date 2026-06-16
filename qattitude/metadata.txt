@@ -12,6 +12,4 @@ repository=https://github.com/gecos-lab/qAttitude
 tracker=https://github.com/gecos-lab/qAttitude/issues
 tags=geology,stereonet,structural geology,attitude
 category=Analysis
-plugin_dependencies=PackageInstallerQgis
 icon=icon.png
-changelog = 0.1.1 : Joint Qgis3/Qgis4 compliance - Scan_qt6_compat plugin

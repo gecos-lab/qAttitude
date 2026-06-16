@@ -1,4 +1,4 @@
 # -*- coding: utf-8 -*-
 def classFactory(iface):
-    from .qAttitude import qAttitudePlugin
+    from .qAttitude_core import qAttitudePlugin
     return qAttitudePlugin(iface)

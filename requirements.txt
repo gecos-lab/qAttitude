@@ -1,5 +1,0 @@
-pandas
-mplstereonet
-scikit-learn
-kmedoids
-sphstat

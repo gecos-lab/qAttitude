@@ -1,13 +1,21 @@
 # -*- coding: utf-8 -*-
-# qAttitude @ Andrea Bistacchi 2024-06-26
+# qAttitude @ Andrea Bistacchi 2025-09-20
 
 import os
 import sys
 import traceback
+import warnings
+
 import numpy as np
 import pandas as pd
 from scipy.stats import chi2
-from sklearn.cluster import KMeans
+
+from scipy.cluster.vq import kmeans2
+
+import matplotlib
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.figure import Figure
 
 from qgis.PyQt.QtWidgets import (
     QWidget,
@@ -54,31 +62,36 @@ from .qt_compat import (
     QVAR_INT,
 )
 
-import matplotlib
-
+# Matplotlib plotting mode
 matplotlib.use("QtAgg")
-import matplotlib.pyplot as plt
-from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
-from matplotlib.figure import Figure
 
-# Handle mplstereonet deprecation warnings in Matplotlib 3.6+
-import warnings
+# Import mplstereonet handling deprecation warnings in Matplotlib 3.6+
 with warnings.catch_warnings():
-    warnings.filterwarnings("ignore", category=PendingDeprecationWarning, module="mplstereonet")
+    warnings.filterwarnings(
+        "ignore", category=PendingDeprecationWarning, module="mplstereonet"
+    )
     # In newer matplotlib version, this might be a MatplotlibDeprecationWarning
     try:
         from matplotlib import MatplotlibDeprecationWarning
-        warnings.filterwarnings("ignore", category=MatplotlibDeprecationWarning, module="mplstereonet")
+
+        warnings.filterwarnings(
+            "ignore", category=MatplotlibDeprecationWarning, module="mplstereonet"
+        )
     except ImportError:
         pass
-    import mplstereonet
-    from mplstereonet import stereonet_math
+    # import mplstereonet
+    # from mplstereonet import stereonet_math
+    from . import mplstereonet
+    from .mplstereonet import stereonet_math
 
-# Fix for Matplotlib 3.6+ which deprecated Axes.cla in favor of Axes.clear
-# and causes mplstereonet to fail or warn.
-if hasattr(mplstereonet.StereonetAxes, 'cla') and not hasattr(mplstereonet.StereonetAxes, 'clear'):
+# Fix for Matplotlib 3.6+ which deprecated Axes.cla in favor of Axes.clear and causes mplstereonet to fail or warn.
+if hasattr(mplstereonet.StereonetAxes, "cla") and not hasattr(
+    mplstereonet.StereonetAxes, "clear"
+):
     mplstereonet.StereonetAxes.clear = mplstereonet.StereonetAxes.cla
-elif hasattr(mplstereonet.StereonetAxes, 'clear') and not hasattr(mplstereonet.StereonetAxes, 'cla'):
+elif hasattr(mplstereonet.StereonetAxes, "clear") and not hasattr(
+    mplstereonet.StereonetAxes, "cla"
+):
     mplstereonet.StereonetAxes.cla = mplstereonet.StereonetAxes.clear
 
 
@@ -1261,9 +1274,7 @@ class qAttitudeDialog(QWidget):
             )
             return
         self._picking_enabled = not self._picking_enabled
-        self.btn_pick.setText(
-            "Picking: ON" if self._picking_enabled else "Pick seeds"
-        )
+        self.btn_pick.setText("Picking: ON" if self._picking_enabled else "Pick seeds")
 
     def _clear_picks(self):
         """Used to clear kmedoids seeds."""
@@ -1313,7 +1324,9 @@ class qAttitudeDialog(QWidget):
             return
 
         if self.data.empty or "cluster" not in self.data.columns:
-            QMessageBox.warning(self, "qAttitude", "No clustering data available. Run analysis first.")
+            QMessageBox.warning(
+                self, "qAttitude", "No clustering data available. Run analysis first."
+            )
             return
 
         field_name = self.transfer_field.text().strip()
@@ -1328,7 +1341,7 @@ class qAttitudeDialog(QWidget):
                 self,
                 "qAttitude",
                 f"Field '{field_name}' does not exist. Create it?",
-                MSGBOX_YES | MSGBOX_NO
+                MSGBOX_YES | MSGBOX_NO,
             )
             if res == MSGBOX_YES:
                 layer.startEditing()
@@ -1339,7 +1352,9 @@ class qAttitudeDialog(QWidget):
                 return
 
         if field_index == -1:
-            QMessageBox.critical(self, "qAttitude", f"Could not create or find field '{field_name}'.")
+            QMessageBox.critical(
+                self, "qAttitude", f"Could not create or find field '{field_name}'."
+            )
             return
 
         # Prepare data for update.
@@ -1480,63 +1495,90 @@ class qAttitudeDialog(QWidget):
                     return
 
             vectors = self.data[["l", "m", "n"]].values
-            
+
             # Initialization method
             if self.init_pick.isChecked():
                 if len(self._picked_medoid_indices) < k:
-                    self.append_log(f"Picking enabled but only {len(self._picked_medoid_indices)}/{k} seeds picked. Using k-means++ instead.")
-                    init_method = "k-means++"
-                    n_init = "auto"
+                    self.append_log(
+                        f"Picking enabled but only {len(self._picked_medoid_indices)}/{k} seeds picked. Using k-means++ instead."
+                    )
+                    init_method = "++"
+                    k_init = n_clusters
                 else:
                     # Extract vectors for picked indices
                     # Note: self.data is already doubled in axial mode, but _on_plot_click picks from _last_projected
                     # which corresponds to the first len(data)//2 points (low_hemi=True)
+                    init_method = "matrix"
+
                     picked_indices = self._picked_medoid_indices[:k]
                     init_vectors = vectors[picked_indices]
-                    
                     if analysis_type == "axial":
                         # In axial mode, we need 2k initial centers.
                         # For each picked point, we add its antipodal point.
                         antipodal_vectors = -init_vectors
-                        init_method = np.vstack([init_vectors, antipodal_vectors])
+                        k_init = np.vstack([init_vectors, antipodal_vectors])
                     else:
-                        init_method = init_vectors
-                    
+                        k_init = init_vectors
                     n_init = 1
-                    self.append_log(f"Using {len(init_method)} picked seeds for initialization.")
+                    self.append_log(
+                        f"Using {len(init_method)} picked seeds for initialization."
+                    )
             else:
-                init_method = "k-means++"
-                n_init = "auto"
+                init_method = "++"
+                k_init = n_clusters
 
-            kmeans_model = KMeans(
-                n_clusters=n_clusters,
-                init=init_method,
-                n_init=n_init,
-                max_iter=100,
-                tol=0.0001,
-                verbose=0,
-                random_state=self.seed_spin.value(),
-                copy_x=True,
-                algorithm="lloyd",
-            ).fit(vectors)
+            # kmeans
+            # kmeans2(data, k, iter=10, minit='random')
+            #
+            # data: ndarray
+            # A ‘M’ by ‘N’ array of ‘M’ observations in ‘N’ dimensions or a length ‘M’ array of ‘M’ 1-D observations.
+            #
+            # k: int or ndarray
+            # The number of clusters to form as well as the number of centroids to generate. If minit
+            # initialization string is ‘matrix’, or if a ndarray is given instead, it is interpreted as
+            # initial cluster to use instead.
+            #
+            # iter: int, optional
+            # Number of iterations of the k-means algorithm to run. Note that this differs in meaning from
+            # the iters parameter to the kmeans function.
+            #
+            # minit: str, optional
+            # Method for initialization. Available methods are ‘random’, ‘points’, ‘++’ and ‘matrix’:
+            #
+            # ‘random’: generate k centroids from a Gaussian with mean and variance estimated from the data.
+            #
+            # ‘points’: choose k observations (rows) at random from data for the initial centroids.
+            #
+            # ‘++’: choose k observations accordingly to the kmeans++ method (careful seeding)
+            #
+            # ‘matrix’: interpret the k parameter as a k by M (or length k array for 1-D data) array
+            # of initial centroids.
+            centroids, labels = kmeans2(
+                vectors,
+                k_init,
+                iter=50,
+                thresh=0.005,
+                minit=init_method,
+                seed=self.seed_spin.value(),
+            )
 
             # assign cluster labels to data
-            self.data["cluster"] = kmeans_model.labels_
+            self.data["cluster"] = labels
 
-            # clean and polulate the means dataframe
+            # clean and populate the means dataframe
             self.means = self.means.iloc[0:0]
-            self.means["cluster"] = np.arange(kmeans_model.cluster_centers_.shape[0])
-            self.means["low_hemi"] = kmeans_model.cluster_centers_[:, 2] <= 0
+            self.means["cluster"] = np.arange(centroids.shape[0])
+            self.means["low_hemi"] = centroids[:, 2] <= 0
             self.means["n_data"] = self.data.groupby("cluster").size()
 
             # Calculate k-means cluster centers' trend and plunge
-            k_centers_l = kmeans_model.cluster_centers_[:, 0]
-            k_centers_m = kmeans_model.cluster_centers_[:, 1]
-            k_centers_n = kmeans_model.cluster_centers_[:, 2]
+            k_centers_l = centroids[:, 0]
+            k_centers_m = centroids[:, 1]
+            k_centers_n = centroids[:, 2]
 
             k_trends = []
             k_plunges = []
-            for i in range(kmeans_model.cluster_centers_.shape[0]):
+            for i in range(centroids.shape[0]):
                 trend, plunge = lmn_to_trend_plunge(
                     k_centers_l[i], k_centers_m[i], k_centers_n[i]
                 )
@@ -1555,7 +1597,9 @@ class qAttitudeDialog(QWidget):
                 self.means["symmetric_cluster"] = -1
 
                 if not upper_hemi_means.empty and not low_hemi_means.empty:
-                    self.append_log("--- Axial Symmetry Verification (Lower vs Upper) ---")
+                    self.append_log(
+                        "--- Axial Symmetry Verification (Lower vs Upper) ---"
+                    )
 
                     # (1) Check if the number of clusters in upper and lower hemisphere is the same
                     if len(low_hemi_means) != len(upper_hemi_means):
@@ -1587,29 +1631,38 @@ class qAttitudeDialog(QWidget):
                             # Angle between v_low and -v_up (should be close to 180 in axial mode, as v_up is already the opposite of the upper hemisphere center)
                             cos_angle = np.clip(np.dot(v_low, -v_up), -1.0, 1.0)
                             angle = np.degrees(np.arccos(cos_angle))
-                            self.append_log(f"Testing Pair: Low {low_row['cluster']} - Up {up_row['cluster']} | Angular Distance from symmetry: {angle:.4f}°")
-                            all_pairings.append({
-                                "low_id": low_row["cluster"],
-                                "up_id": up_row["cluster"],
-                                "angle": angle,
-                                "n_data_low": low_row["n_data"],
-                                "n_data_up": up_row["n_data"]
-                            })
+                            self.append_log(
+                                f"Testing Pair: Low {low_row['cluster']} - Up {up_row['cluster']} | Angular Distance from symmetry: {angle:.4f}°"
+                            )
+                            all_pairings.append(
+                                {
+                                    "low_id": low_row["cluster"],
+                                    "up_id": up_row["cluster"],
+                                    "angle": angle,
+                                    "n_data_low": low_row["n_data"],
+                                    "n_data_up": up_row["n_data"],
+                                }
+                            )
 
                     # Sort pairings by angle descending (closest to 180 first)
                     all_pairings.sort(key=lambda x: x["angle"], reverse=True)
 
                     matched_low = set()
                     matched_up = set()
-                    
+
                     total_data_points = len(self.data)
 
                     for pairing in all_pairings:
-                        if pairing["low_id"] not in matched_low and pairing["up_id"] not in matched_up:
+                        if (
+                            pairing["low_id"] not in matched_low
+                            and pairing["up_id"] not in matched_up
+                        ):
                             low_id = pairing["low_id"]
                             up_id = pairing["up_id"]
                             angle = pairing["angle"]
-                            delta_data_in_pair = abs(pairing["n_data_low"] - pairing["n_data_up"])
+                            delta_data_in_pair = abs(
+                                pairing["n_data_low"] - pairing["n_data_up"]
+                            )
 
                             # (2) The angular distance must not exceed 2 degrees within any cluster pair
                             if angle < 178.0:
@@ -1635,8 +1688,12 @@ class qAttitudeDialog(QWidget):
                                 self._update_plot()
                                 return
 
-                            self.means.loc[self.means["cluster"] == low_id, "symmetric_cluster"] = int(up_id)
-                            self.means.loc[self.means["cluster"] == up_id, "symmetric_cluster"] = int(low_id)
+                            self.means.loc[
+                                self.means["cluster"] == low_id, "symmetric_cluster"
+                            ] = int(up_id)
+                            self.means.loc[
+                                self.means["cluster"] == up_id, "symmetric_cluster"
+                            ] = int(low_id)
 
                             matched_low.add(low_id)
                             matched_up.add(up_id)
@@ -1645,10 +1702,14 @@ class qAttitudeDialog(QWidget):
                                 f"Cluster {low_id} (Low) matched with Cluster {up_id} (Up): "
                                 f"Angular Distance from symmetry: {angle:.4f}° | Data points: {delta_data_in_pair}"
                             )
-                    self.append_log("----------------------------------------------------")
+                    self.append_log(
+                        "----------------------------------------------------"
+                    )
                 else:
                     # If either is empty, but we are in axial mode, it's a failure of symmetry
-                    self.append_log("WARNING: Clustering significance failed! No clusters found in one of the hemispheres.")
+                    self.append_log(
+                        "WARNING: Clustering significance failed! No clusters found in one of the hemispheres."
+                    )
                     self.data["cluster"] = 0
                     self.means = self.means.iloc[0:0]
                     self._update_plot()
@@ -1932,12 +1993,16 @@ class qAttitudeDialog(QWidget):
             is_axial = self.analysis_axial.isChecked()
             symmetric_id = -1
             if is_axial:
-                symmetric_ids = self.means.loc[self.means["cluster"] == cluster, "symmetric_cluster"].values
+                symmetric_ids = self.means.loc[
+                    self.means["cluster"] == cluster, "symmetric_cluster"
+                ].values
                 if len(symmetric_ids) > 0:
                     symmetric_id = symmetric_ids[0]
 
             if is_axial and symmetric_id != -1:
-                cluster_data = self.data[self.data["cluster"].isin([cluster, symmetric_id])]
+                cluster_data = self.data[
+                    self.data["cluster"].isin([cluster, symmetric_id])
+                ]
             else:
                 cluster_data = self.data[self.data["cluster"] == cluster]
 
