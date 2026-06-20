@@ -9,7 +9,6 @@ import warnings
 import numpy as np
 import pandas as pd
 from scipy.stats import chi2
-
 from scipy.cluster.vq import kmeans2
 
 import matplotlib
@@ -39,7 +38,6 @@ from qgis.PyQt.QtWidgets import (
 )
 from qgis.PyQt.QtGui import QFont, QIcon
 from qgis.PyQt.QtCore import pyqtSignal, Qt, QEvent
-
 from qgis.core import (
     QgsProject,
     QgsVectorLayer,
@@ -1077,22 +1075,9 @@ class qAttitudeDialog(QWidget):
         self.contour_cmap_combo.currentIndexChanged.connect(self._update_plot)
 
         # Saving
-        g_save = QGroupBox("Save to files (off by default)")
-        controls_layout.addWidget(g_save)
-        grids = QGridLayout(g_save)
-
-        self.chk_save = QCheckBox("Save outputs")
-        self.chk_save.setChecked(False)
-
-        self.out_dir = QLineEdit("")
-
-        self.btn_browse = QPushButton("Browse…")
-        self.btn_browse.clicked.connect(self._browse_dir)
-
-        grids.addWidget(self.chk_save, 0, 0, 1, 2)
-        grids.addWidget(QLabel("Directory:"), 1, 0)
-        grids.addWidget(self.out_dir, 1, 1)
-        grids.addWidget(self.btn_browse, 1, 2)
+        btn_save_plot = QPushButton("Save Plot and Means...")
+        btn_save_plot.clicked.connect(self.save_plot_dialog)
+        controls_layout.addWidget(btn_save_plot)
 
         # Log window
         g_log = QGroupBox("Log")
@@ -1817,9 +1802,9 @@ class qAttitudeDialog(QWidget):
             )
 
             # tests
-            # The original code had commented out tests that relied on `sphstat` library's specific return formats.
-            # Since `sphstat` is not directly used and local replacements are provided, these tests are not directly applicable
-            # without significant re-implementation to match the `sphstat` output structure.
+            # The original code included statistical tests that relied on `sphstat` library's specific return formats.
+            # Since `sphstat` is not directly used and local replacements are provided, these tests are not directly
+            # applicable without significant re-implementation to match the `sphstat` output structure.
             # For now, I'm keeping them commented out.
 
             # # Is uniform [True] test:
@@ -1854,11 +1839,6 @@ class qAttitudeDialog(QWidget):
             self.append_log(
                 f"ERROR during cluster calculation: {type(e).__name__}: {e}\n{tb}"
             )
-            # QMessageBox.critical(
-            #     self,
-            #     "qAttitude",
-            #     f"Error during cluster calculation: {type(e).__name__}: {e}\n\n{tb}",
-            # )
 
         # finally update plot
         self._update_plot()
@@ -1878,7 +1858,7 @@ class qAttitudeDialog(QWidget):
                 fontsize=7,
             )
             self.ax.grid(True, zorder=0, alpha=0.5)
-            # self.ax.grid(kind="polar", zorder=0, alpha=0.5)
+            # self.ax.grid(kind="polar", zorder=0, alpha=0.5)  # polar grid needs reviewing
             self.canvas.draw_idle()
         except Exception:
             pass
@@ -1907,7 +1887,7 @@ class qAttitudeDialog(QWidget):
                 fontsize=7,
             )
             self.ax.grid(True, zorder=0, alpha=0.5)
-            # self.ax.grid(kind="polar", zorder=0, alpha=0.5)
+            # self.ax.grid(kind="polar", zorder=0, alpha=0.5)  # polar grid needs reviewing
 
             if not self.data.empty:
                 query = "low_hemi == True"
@@ -2142,6 +2122,93 @@ class qAttitudeDialog(QWidget):
                 linewidth=2.0,
                 alpha=1,
                 zorder=5,
+            )
+
+    def save_plot_dialog(self):
+        from qgis.core import QgsProject, Qgis
+        from qgis.PyQt.QtWidgets import QFileDialog, QMessageBox
+        import os
+        import pandas as pd
+
+        # 1. Get default filename from selected layer
+        active_layer = self.iface.activeLayer()
+        default_filename = active_layer.name() if active_layer else "stereonet_output"
+
+        # 2. Get current QGIS project root folder
+        project_path = QgsProject.instance().fileName()
+        default_dir = (
+            os.path.dirname(project_path) if project_path else os.path.expanduser("~")
+        )
+        default_save_path = os.path.join(default_dir, default_filename)
+
+        # 3. Loop until user picks a safe name or cancels
+        while True:
+            file_path, _ = QFileDialog.getSaveFileName(
+                None,
+                "Save Plot and Data (Generates PNG, SVG, and CSV)",
+                default_save_path,
+                "All Outputs (*)",
+            )
+
+            # If the user cancels the file dialog completely, exit the loop safely
+            if not file_path:
+                return
+
+            base_path, _ = os.path.splitext(file_path)
+            png_path = f"{base_path}.png"
+            svg_path = f"{base_path}.svg"
+            csv_path = f"{base_path}.csv"
+
+            # Check if any of the files already exist
+            existing_files = [
+                f for f in [png_path, svg_path, csv_path] if os.path.exists(f)
+            ]
+
+            if existing_files:
+                # Format a friendly warning message listing what already exists
+                file_list_str = "\n".join([os.path.basename(f) for f in existing_files])
+                reply = QMessageBox.question(
+                    None,
+                    "Confirm Overwrite",
+                    f"The following file(s) already exist:\n\n{file_list_str}\n\nDo you want to overwrite them?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No,
+                )
+
+                if reply == QMessageBox.StandardButton.No:
+                    # Update default path to what they just typed so they don't have to re-type everything
+                    default_save_path = base_path
+                    continue  # Jump back to the top of the while loop to reopen the file dialog
+
+            # If no files exist, or the user explicitly chose 'Yes' to overwrite, break the loop
+            break
+
+        # 4. Process and write the files
+        try:
+            # Save PNG
+            self.fig.savefig(png_path, dpi=300, bbox_inches="tight")
+
+            # Save SVG
+            self.fig.savefig(svg_path, bbox_inches="tight")
+
+            # Save DataFrame to CSV
+            if hasattr(self, "means") and isinstance(self.means, pd.DataFrame):
+                self.means.to_csv(csv_path, index=False)
+            elif hasattr(self, "means"):
+                with open(csv_path, "w") as f:
+                    f.write(str(self.means))
+
+            self.iface.messageBar().pushMessage(
+                "Success",
+                f"Saved batch successfully (.png, .svg, .csv) to prefix: {os.path.basename(base_path)}",
+                level=Qgis.Info,
+            )
+
+        except Exception as e:
+            self.iface.messageBar().pushMessage(
+                "Error",
+                f"Failed to complete saving batch: {str(e)}",
+                level=Qgis.Critical,
             )
 
 
